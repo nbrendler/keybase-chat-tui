@@ -1,5 +1,6 @@
-use client::test;
+use client::{KeybaseCommand, KeybaseMethod, keybase_exec};
 
 fn main() {
-    test();
+    let result = keybase_exec(KeybaseCommand { method: KeybaseMethod::list}).unwrap();
+    println!("{}", result);
 }

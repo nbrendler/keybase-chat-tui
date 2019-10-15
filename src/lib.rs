@@ -1,14 +1,30 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-pub fn test() {
-    println!("test");
+use serde::{Serialize, Deserialize};
+use serde_json::Result;
+
+#[derive(Serialize, Deserialize)]
+pub enum KeybaseMethod {
+    list
+    }
+
+#[derive(Serialize, Deserialize)]
+pub struct KeybaseCommand {
+    pub method: KeybaseMethod
 }
 
-struct KeybaseOptions;
+pub fn keybase_exec(command: KeybaseCommand) -> Result<String> {
+    let mut child = Command::new("keybase").arg("chat").arg("api")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn Keybase");
 
-fn keybase_exec<I, S>(args: I, options: KeybaseOptions) where I: IntoIterator<Item=S>, S: AsRef<OsStr>{
-    let child = Command::new("keybase")
-        .args(args)
-        .spawn
-        
+    {
+        let stdin = child.stdin.as_mut().expect("Failed to get child stdin");
+        serde_json::to_writer(stdin, &command)?;
+    }
+
+    let output = child.wait_with_output().expect("No Keybase output");
+    Ok(String::from_utf8(output.stdout).expect("Failed UTF8 conversion"))
 }
