@@ -1,6 +1,7 @@
-use client::{KeybaseCommand, KeybaseMethod, keybase_exec};
+use client::{list_conversations, Conversation};
 
 fn main() {
-    let result = keybase_exec(KeybaseCommand { method: KeybaseMethod::list}).unwrap();
-    println!("{}", result);
+    let convos: Vec<Conversation> = list_conversations();
+    let channel_names: Vec<String> = convos.into_iter().map(|c| c.channel.name).collect();
+    println!("{:?}", channel_names);
 }

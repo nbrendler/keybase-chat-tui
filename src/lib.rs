@@ -1,20 +1,50 @@
 use std::process::{Command, Stdio};
 
-use serde::{Serialize, Deserialize};
-use serde_json::Result;
+use serde::{Deserialize, Serialize};
+use serde_json;
 
-#[derive(Serialize, Deserialize)]
-pub enum KeybaseMethod {
-    list
-    }
-
-#[derive(Serialize, Deserialize)]
-pub struct KeybaseCommand {
-    pub method: KeybaseMethod
+#[derive(Debug, Deserialize)]
+pub struct Channel {
+    pub name: String,
+    pub members_type: String,
+    pub topic_type: String,
 }
 
-pub fn keybase_exec(command: KeybaseCommand) -> Result<String> {
-    let mut child = Command::new("keybase").arg("chat").arg("api")
+// TODO: date fields
+#[derive(Debug, Deserialize)]
+pub struct Conversation {
+    pub id: String,
+    pub channel: Channel,
+    pub unread: bool,
+    pub member_status: String,
+}
+
+#[derive(Deserialize)]
+struct ConversationResultInner {
+    conversations: Vec<Conversation>,
+}
+
+#[derive(Deserialize)]
+struct ConversationResult {
+    result: ConversationResultInner,
+}
+
+#[derive(Serialize)]
+struct KBCommand {
+    pub method: &'static str,
+}
+
+pub fn list_conversations() -> Vec<Conversation> {
+    let result = keybase_exec(KBCommand { method: "list" }).unwrap();
+    let parsed_result: ConversationResult =
+        serde_json::from_slice(result.as_slice()).expect("Failed to parse conversation result");
+    parsed_result.result.conversations
+}
+
+fn keybase_exec(command: KBCommand) -> serde_json::Result<Vec<u8>> {
+    let mut child = Command::new("keybase")
+        .arg("chat")
+        .arg("api")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -26,5 +56,5 @@ pub fn keybase_exec(command: KeybaseCommand) -> Result<String> {
     }
 
     let output = child.wait_with_output().expect("No Keybase output");
-    Ok(String::from_utf8(output.stdout).expect("Failed UTF8 conversion"))
+    Ok(output.stdout)
 }
