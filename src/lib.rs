@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::process::{Command, Stdio};
 
 use serde;
@@ -27,8 +28,10 @@ pub struct MessageBody {
 #[serde(tag = "type")]
 #[allow(non_camel_case_types)]
 pub enum MessageType {
-    text { text: MessageBody },
     attachment {},
+    metadata {},
+    system {},
+    text { text: MessageBody },
     unfurl {},
 }
 
@@ -61,23 +64,39 @@ pub fn list_conversations() -> Vec<Conversation> {
         .expect("Failed to deserialize conversation list")
 }
 
-pub fn read_conversation<T: Into<String>>(name: T, count: u32) -> Vec<Message> {
-    let result = keybase_exec(serde_json::json!({
+pub fn read_conversation<T: Into<String>>(channel_name: T, count: u32) -> Vec<Message> {
+    let result = keybase_exec(json!({
         "method": "read",
         "params": {
             "options": {
-                "channel": {"name": name.into()},
+                "channel": {"name": channel_name.into(), "members_type": "team"},
                 "pagination": {"num": count}
             }
         }
     }))
     .unwrap();
     let mut parsed: Value = from_slice(result.as_slice()).unwrap();
+    println!("{:?}", parsed);
     from_value::<Vec<MessageWrapper>>(parsed["result"]["messages"].take())
         .expect("Failed to deserialize messages")
         .into_iter()
         .map(|wrapper| wrapper.msg)
         .collect()
+}
+
+pub fn send_message<T: Into<String>>(channel_name: T, message: T) {
+    let result = keybase_exec(json!({
+        "method": "send",
+        "params": {
+            "options": {
+                "channel": {"name": channel_name.into(), "members_type": "team", "topic_name": "bot-testing"},
+                "message": {"body": message.into()}
+            }
+        }
+    }))
+    .unwrap();
+    let mut parsed: Value = from_slice(result.as_slice()).unwrap();
+    println!("{:?}", parsed);
 }
 
 fn keybase_exec(command: Value) -> serde_json::Result<Vec<u8>> {

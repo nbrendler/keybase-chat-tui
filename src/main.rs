@@ -1,4 +1,4 @@
-use client::{list_conversations, read_conversation, MessageType};
+use client::{list_conversations, read_conversation, send_message, MessageType};
 
 fn main() {
     let convos = list_conversations();
@@ -13,4 +13,6 @@ fn main() {
             _ => {}
         }
     }
+
+    send_message("hyperyolo", "test!");
 }
