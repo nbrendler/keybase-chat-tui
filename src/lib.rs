@@ -1,15 +1,26 @@
-use std::error::Error;
 use std::process::{Command, Stdio};
 
+#[macro_use]
+use log::debug;
 use serde;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json;
-use serde_json::{from_slice, from_value, json, to_writer, Value};
+use serde_json::{from_slice, from_value, json, to_string_pretty, to_writer, Value};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
+pub enum MemberType {
+    #[serde(rename = "impteamnative")]
+    User,
+    #[serde(rename = "team")]
+    Team,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Channel {
     pub name: String,
-    pub topic_type: String,
+    #[serde(default)]
+    pub topic_name: String,
+    pub members_type: MemberType,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,11 +39,18 @@ pub struct MessageBody {
 #[serde(tag = "type")]
 #[allow(non_camel_case_types)]
 pub enum MessageType {
-    attachment {},
-    metadata {},
-    system {},
-    text { text: MessageBody },
-    unfurl {},
+    #[serde(rename = "join")]
+    Join,
+    #[serde(rename = "attachment")]
+    Attachment {},
+    #[serde(rename = "metadata")]
+    Metadata {},
+    #[serde(rename = "system")]
+    System {},
+    #[serde(rename = "text")]
+    Text { text: MessageBody },
+    #[serde(rename = "unfurl")]
+    Unfurl {},
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,52 +72,47 @@ pub struct Sender {
 }
 
 pub fn list_conversations() -> Vec<Conversation> {
-    let result = keybase_exec(json!({
+    let mut result = keybase_exec(json!({
         "method": "list"
     }))
     .unwrap();
 
-    let mut parsed: Value = from_slice(result.as_slice()).unwrap();
-    from_value(parsed["result"]["conversations"].take())
+    from_value(result["result"]["conversations"].take())
         .expect("Failed to deserialize conversation list")
 }
 
-pub fn read_conversation<T: Into<String>>(channel_name: T, count: u32) -> Vec<Message> {
-    let result = keybase_exec(json!({
+pub fn read_conversation(channel: &Channel, count: u32) -> Vec<Message> {
+    let mut result = keybase_exec(json!({
         "method": "read",
         "params": {
             "options": {
-                "channel": {"name": channel_name.into(), "members_type": "team"},
+                "channel": channel,
                 "pagination": {"num": count}
             }
         }
     }))
     .unwrap();
-    let mut parsed: Value = from_slice(result.as_slice()).unwrap();
-    println!("{:?}", parsed);
-    from_value::<Vec<MessageWrapper>>(parsed["result"]["messages"].take())
+    from_value::<Vec<MessageWrapper>>(result["result"]["messages"].take())
         .expect("Failed to deserialize messages")
         .into_iter()
         .map(|wrapper| wrapper.msg)
         .collect()
 }
 
-pub fn send_message<T: Into<String>>(channel_name: T, message: T) {
-    let result = keybase_exec(json!({
+pub fn send_message<T: Into<String>>(channel: &Channel, message: T) {
+    keybase_exec(json!({
         "method": "send",
         "params": {
             "options": {
-                "channel": {"name": channel_name.into(), "members_type": "team", "topic_name": "bot-testing"},
+                "channel": channel,
                 "message": {"body": message.into()}
             }
         }
     }))
-    .unwrap();
-    let mut parsed: Value = from_slice(result.as_slice()).unwrap();
-    println!("{:?}", parsed);
+    .expect("Failed to send message");
 }
 
-fn keybase_exec(command: Value) -> serde_json::Result<Vec<u8>> {
+fn keybase_exec(command: Value) -> serde_json::Result<Value> {
     let mut child = Command::new("keybase")
         .arg("chat")
         .arg("api")
@@ -110,9 +123,13 @@ fn keybase_exec(command: Value) -> serde_json::Result<Vec<u8>> {
 
     {
         let stdin = child.stdin.as_mut().expect("Failed to get child stdin");
+        debug!("{}", to_string_pretty(&command).unwrap());
         to_writer(stdin, &command)?;
     }
 
     let output = child.wait_with_output().expect("No Keybase output");
-    Ok(output.stdout)
+    let parsed: Value = from_slice(output.stdout.as_slice()).unwrap();
+
+    debug!("{}", to_string_pretty(&parsed).unwrap());
+    Ok(parsed)
 }
