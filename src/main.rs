@@ -52,6 +52,7 @@ fn conversation_list(convos: Vec<client::Conversation>) -> LinearLayout {
     }))
 }
 
+// TODO: Make this into an implementation of View with events
 fn chat_area(messages: Vec<client::Message>) -> ViewBox {
     let mut layout = LinearLayout::vertical();
 
@@ -74,7 +75,8 @@ fn chat_area(messages: Vec<client::Message>) -> ViewBox {
 }
 
 fn main() {
-    env_logger::init();
+    let mut builder = env_logger::Builder::from_default_env();
+    builder.target(env_logger::Target::Stderr).init();
 
     let convos = client::list_conversations();
     let chat = client::read_conversation(&convos[0].channel, 50);
