@@ -1,2 +1,6 @@
 shadow = false
 borders = "none"
+
+[colors]
+primary = ["white"]
+highlight = "#ffffff"
