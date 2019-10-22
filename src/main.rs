@@ -1,8 +1,12 @@
+use std::ops::Deref;
+
 use cursive::align::HAlign;
 use cursive::theme::{Color, PaletteColor};
 use cursive::traits::*;
-use cursive::view::SizeConstraint;
-use cursive::views::{BoxView, Dialog, LinearLayout, ListView, Panel, ScrollView, TextView};
+use cursive::view::{IntoBoxedView, SizeConstraint};
+use cursive::views::{
+    BoxView, Dialog, EditView, LinearLayout, ListView, Panel, ScrollView, TextView, ViewBox,
+};
 use cursive::Cursive;
 use env_logger;
 
@@ -23,19 +27,33 @@ fn test() {
     );
 }
 
-fn conversation_list(convos: Vec<client::Conversation>) -> LinearLayout {
-    LinearLayout::vertical()
-        //        .child(TextView::new("Conversations").h_align(HAlign::Center))
-        .child(Panel::new(ListView::new().with(|list| {
-            for convo in convos {
-                list.add_child("", TextView::new(&convo.channel.name));
-            }
-        })))
+fn send_chat_message(s: &mut Cursive, msg: &str) {
+    if msg.is_empty() {
+        return;
+    }
+
+    s.call_on_id("edit", |view: &mut EditView| view.set_content(""));
+
+    client::send_message(
+        &client::Channel {
+            name: String::from("hyperyolo"),
+            topic_name: String::from("bot-testing"),
+            members_type: client::MemberType::Team,
+        },
+        msg,
+    );
 }
 
-fn chat_area(messages: Vec<client::Message>) -> LinearLayout {
+fn conversation_list(convos: Vec<client::Conversation>) -> LinearLayout {
+    LinearLayout::vertical().child(ListView::new().with(|list| {
+        for convo in convos {
+            list.add_child("", TextView::new(&convo.channel.name));
+        }
+    }))
+}
+
+fn chat_area(messages: Vec<client::Message>) -> ViewBox {
     let mut layout = LinearLayout::vertical();
-    //.child(TextView::new("Chat").h_align(HAlign::Center));
 
     for msg in messages.iter().rev() {
         match &msg.content {
@@ -46,8 +64,13 @@ fn chat_area(messages: Vec<client::Message>) -> LinearLayout {
             _ => {}
         }
     }
+    let chat_layout = LinearLayout::vertical()
+        .child(layout.scrollable())
+        .child(EditView::new().on_submit(send_chat_message).with_id("edit"));
 
-    layout
+    ViewBox::new(
+        BoxView::new(SizeConstraint::Full, SizeConstraint::Full, chat_layout).as_boxed_view(),
+    )
 }
 
 fn main() {
@@ -65,8 +88,6 @@ fn main() {
 
     siv.set_theme(theme);
 
-    siv.add_global_callback('q', Cursive::quit);
-
     siv.add_layer(
         Dialog::new().content(
             LinearLayout::horizontal()
@@ -75,11 +96,7 @@ fn main() {
                     SizeConstraint::Full,
                     conversation_list(convos),
                 ))
-                .child(
-                    BoxView::new(SizeConstraint::Full, SizeConstraint::Full, chat_area(chat))
-                        .scrollable()
-                        .with_id("chat"),
-                ),
+                .child(chat_area(chat)),
         ),
     );
 
