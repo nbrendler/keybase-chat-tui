@@ -1,5 +1,5 @@
-use std::ops::Deref;
-
+use crossbeam::channel::unbounded;
+use crossbeam::{Receiver, Sender};
 use cursive::align::HAlign;
 use cursive::theme::{Color, PaletteColor};
 use cursive::traits::*;
@@ -8,24 +8,12 @@ use cursive::views::{
     BoxView, Dialog, EditView, LinearLayout, ListView, Panel, ScrollView, TextView, ViewBox,
 };
 use cursive::Cursive;
+use std::thread;
+#[macro_use]
+use log::{info, error};
 use env_logger;
 
 use client;
-
-fn test() {
-    let convos = client::list_conversations();
-
-    let messages = client::read_conversation(&convos[0].channel, 20);
-
-    client::send_message(
-        &client::Channel {
-            name: String::from("hyperyolo"),
-            topic_name: String::from("bot-testing"),
-            members_type: client::MemberType::Team,
-        },
-        "test!",
-    );
-}
 
 fn send_chat_message(s: &mut Cursive, msg: &str) {
     if msg.is_empty() {
@@ -44,27 +32,29 @@ fn send_chat_message(s: &mut Cursive, msg: &str) {
     );
 }
 
-fn conversation_list(convos: Vec<client::Conversation>) -> LinearLayout {
-    LinearLayout::vertical().child(ListView::new().with(|list| {
-        for convo in convos {
-            list.add_child("", TextView::new(&convo.channel.name));
+fn conversation_list() -> LinearLayout {
+    LinearLayout::vertical().child(ListView::new().with_id("conversation_list"))
+}
+
+fn set_messages(s: &mut Cursive, messages: Vec<client::Message>) {
+    s.call_on_id("chat_container", |view: &mut ListView| {
+        view.clear();
+        for msg in messages.iter().rev() {
+            match &msg.content {
+                client::MessageType::Text { text } => view.add_child(
+                    &text.body,
+                    TextView::new(&format!("{}: {}", msg.sender.username, text.body)),
+                ),
+                _ => {}
+            }
         }
-    }))
+    });
 }
 
 // TODO: Make this into an implementation of View with events
-fn chat_area(messages: Vec<client::Message>) -> ViewBox {
-    let mut layout = LinearLayout::vertical();
+fn chat_area() -> ViewBox {
+    let mut layout = LinearLayout::vertical().child(ListView::new().with_id("chat_container"));
 
-    for msg in messages.iter().rev() {
-        match &msg.content {
-            client::MessageType::Text { text } => layout.add_child(TextView::new(&format!(
-                "{}: {}",
-                msg.sender.username, text.body
-            ))),
-            _ => {}
-        }
-    }
     let chat_layout = LinearLayout::vertical()
         .child(layout.scrollable())
         .child(EditView::new().on_submit(send_chat_message).with_id("edit"));
@@ -74,33 +64,129 @@ fn chat_area(messages: Vec<client::Message>) -> ViewBox {
     )
 }
 
+enum ClientMessage {
+    FetchConversations,
+    FetchMessages(client::Channel),
+    ReceiveConversations(Vec<client::Conversation>),
+    ReceiveMessages(client::Channel, Vec<client::Message>),
+}
+
+enum UiMessage {
+    NewData,
+}
+
+struct Ui {
+    cursive: Cursive,
+    ui_send: Sender<UiMessage>,
+    ui_recv: Receiver<UiMessage>,
+    client_send: Sender<ClientMessage>,
+}
+
+impl Ui {
+    pub fn new(client_send: Sender<ClientMessage>) -> Self {
+        let (ui_send, ui_recv) = unbounded();
+        let mut siv = Cursive::default();
+
+        siv.load_theme_file("assets/default_theme.toml").unwrap();
+        let mut theme = siv.current_theme().clone();
+        theme.palette[PaletteColor::Background] = Color::TerminalDefault;
+        theme.palette[PaletteColor::View] = Color::TerminalDefault;
+
+        siv.set_theme(theme);
+
+        siv.add_layer(
+            Dialog::new().content(
+                LinearLayout::horizontal()
+                    .child(BoxView::new(
+                        SizeConstraint::Free,
+                        SizeConstraint::Full,
+                        conversation_list(),
+                    ))
+                    .child(chat_area()),
+            ),
+        );
+        Ui {
+            cursive: siv,
+            ui_send,
+            ui_recv,
+            client_send,
+        }
+    }
+
+    pub fn step(&mut self) -> bool {
+        if !self.cursive.is_running() {
+            return false;
+        }
+
+        loop {
+            match self.ui_recv.try_recv() {
+                Ok(msg) => match msg {
+                    UiMessage::NewData => {
+                        info!("A thing happened");
+                        info!("{:?}", self.cursive.user_data::<ApplicationState>());
+                        // re-render
+                    }
+                },
+                Err(crossbeam::TryRecvError::Empty) => {
+                    break;
+                }
+                Err(e) => {
+                    error!("{}", e);
+                    break;
+                }
+            }
+        }
+
+        self.cursive.step();
+
+        true
+    }
+}
+
+fn fetch_conversations(sender: Sender<ClientMessage>) {
+    thread::spawn(move || {
+        let convos = client::list_conversations();
+        sender
+            .send(ClientMessage::ReceiveConversations(convos))
+            .unwrap()
+    });
+}
+
+#[derive(Debug)]
+struct ApplicationState {
+    conversations: Vec<client::Conversation>,
+}
+
 fn main() {
     let mut builder = env_logger::Builder::from_default_env();
     builder.target(env_logger::Target::Stderr).init();
 
-    let convos = client::list_conversations();
-    let chat = client::read_conversation(&convos[0].channel, 50);
+    let (client_send, client_recv) = unbounded::<ClientMessage>();
 
-    let mut siv = Cursive::default();
+    fetch_conversations(client_send.clone());
 
-    siv.load_theme_file("assets/default_theme.toml").unwrap();
-    let mut theme = siv.current_theme().clone();
-    theme.palette[PaletteColor::Background] = Color::TerminalDefault;
-    theme.palette[PaletteColor::View] = Color::TerminalDefault;
+    let mut ui = Ui::new(client_send);
 
-    siv.set_theme(theme);
-
-    siv.add_layer(
-        Dialog::new().content(
-            LinearLayout::horizontal()
-                .child(BoxView::new(
-                    SizeConstraint::Free,
-                    SizeConstraint::Full,
-                    conversation_list(convos),
-                ))
-                .child(chat_area(chat)),
-        ),
-    );
-
-    siv.run();
+    while ui.step() {
+        loop {
+            match client_recv.try_recv() {
+                Ok(msg) => match msg {
+                    ClientMessage::ReceiveConversations(convos) => {
+                        ui.cursive
+                            .set_user_data::<ApplicationState>(ApplicationState {
+                                conversations: convos,
+                            });
+                        ui.ui_send.send(UiMessage::NewData).unwrap();
+                    }
+                    _ => {}
+                },
+                Err(crossbeam::TryRecvError::Empty) => {
+                    break;
+                }
+                Err(e) => {
+                    error!("{}", e);
+                }
+            }
+        }
+    }
 }

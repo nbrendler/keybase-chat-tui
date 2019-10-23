@@ -1,5 +1,7 @@
 use std::process::{Command, Stdio};
 
+use cursive::CbSink;
+
 #[macro_use]
 use log::debug;
 use serde;
