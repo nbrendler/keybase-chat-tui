@@ -1,15 +1,19 @@
+use std::any::Any;
+use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-
-use cursive::CbSink;
+use std::thread;
 
 #[macro_use]
 use log::debug;
 use serde;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use serde_json::{from_slice, from_value, json, to_string_pretty, to_writer, Value};
+use serde_json::{from_slice, from_str, from_value, json, to_string_pretty, to_writer, Value};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ApiEvent {}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum MemberType {
     #[serde(rename = "impteamnative")]
     User,
@@ -17,7 +21,7 @@ pub enum MemberType {
     Team,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Channel {
     pub name: String,
     #[serde(default)]
@@ -25,7 +29,7 @@ pub struct Channel {
     pub members_type: MemberType,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Conversation {
     pub id: String,
     pub channel: Channel,
@@ -83,12 +87,12 @@ pub fn list_conversations() -> Vec<Conversation> {
         .expect("Failed to deserialize conversation list")
 }
 
-pub fn read_conversation(channel: &Channel, count: u32) -> Vec<Message> {
+pub fn read_conversation(conversation: &Conversation, count: u32) -> Vec<Message> {
     let mut result = keybase_exec(json!({
         "method": "read",
         "params": {
             "options": {
-                "channel": channel,
+                "channel": &conversation.channel,
                 "pagination": {"num": count}
             }
         }
@@ -112,6 +116,29 @@ pub fn send_message<T: Into<String>>(channel: &Channel, message: T) {
         }
     }))
     .expect("Failed to send message");
+}
+
+pub fn listen<F>(callback: F)
+where
+    F: Fn(Box<dyn Any>) -> () + Send + 'static,
+{
+    let child = Command::new("keybase")
+        .arg("chat")
+        .arg("api-listen")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn Keybase listener");
+
+    thread::spawn(move || {
+        let mut f = BufReader::new(child.stdout.unwrap());
+        loop {
+            let mut buf = String::new();
+            f.read_line(&mut buf).unwrap();
+            let parsed: Value = from_str(buf.as_str()).unwrap();
+            debug!("Got event: {:?}", parsed);
+            callback(Box::new(parsed));
+        }
+    });
 }
 
 fn keybase_exec(command: Value) -> serde_json::Result<Value> {
