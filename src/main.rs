@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::thread;
+use std::io::Error;
+use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
 
 use crossbeam::channel::unbounded;
-use crossbeam::{Receiver, Sender};
+use crossbeam::{select, Receiver, Sender};
 use cursive::theme::{Color, PaletteColor};
 use cursive::traits::*;
 use cursive::view::{IntoBoxedView, SizeConstraint};
@@ -10,8 +11,15 @@ use cursive::views::{BoxView, Dialog, EditView, LinearLayout, ListView, TextView
 use cursive::Cursive;
 use env_logger;
 use log::{debug, error, info};
+use signal_hook::{iterator::Signals, SIGINT, SIGTERM};
 
-use client;
+mod client;
+mod types;
+
+use crate::client::Client;
+use crate::types::{
+    ApiResponse, Channel, ClientMessage, Conversation, MemberType, Message, MessageType,
+};
 
 fn send_chat_message(s: &mut Cursive, msg: &str) {
     if msg.is_empty() {
@@ -19,15 +27,16 @@ fn send_chat_message(s: &mut Cursive, msg: &str) {
     }
 
     s.call_on_id("edit", |view: &mut EditView| view.set_content(""));
-
-    client::send_message(
-        &client::Channel {
-            name: String::from("hyperyolo"),
-            topic_name: String::from("bot-testing"),
-            members_type: client::MemberType::Team,
-        },
-        msg,
-    );
+    s.with_user_data(|client: &mut Client| {
+        client.send_message(
+            &Channel {
+                name: String::from("hyperyolo"),
+                topic_name: String::from("bot-testing"),
+                members_type: MemberType::Team,
+            },
+            msg,
+        );
+    });
 }
 
 fn conversation_list() -> ViewBox {
@@ -50,13 +59,6 @@ fn chat_area() -> ViewBox {
     )
 }
 
-enum ClientMessage {
-    FetchConversations,
-    FetchMessages(client::Conversation),
-    ReceiveConversations(Vec<client::Conversation>),
-    ReceiveMessages(client::Conversation, Vec<client::Message>),
-}
-
 enum UiMessage {
     NewData,
 }
@@ -66,11 +68,10 @@ struct Ui {
     state: ApplicationState,
     ui_send: Sender<UiMessage>,
     ui_recv: Receiver<UiMessage>,
-    client_send: Sender<ClientMessage>,
 }
 
 impl Ui {
-    pub fn new(client_send: Sender<ClientMessage>) -> Self {
+    pub fn new() -> Self {
         let (ui_send, ui_recv) = unbounded();
         let mut siv = Cursive::default();
 
@@ -94,7 +95,6 @@ impl Ui {
             state: ApplicationState::default(),
             ui_send,
             ui_recv,
-            client_send,
         }
     }
 
@@ -136,10 +136,10 @@ impl Ui {
                     view.add_child(
                         "",
                         TextView::new(match &convo.channel.members_type {
-                            client::MemberType::Team => {
+                            MemberType::Team => {
                                 format!("{}#{}", &convo.channel.name, &convo.channel.topic_name)
                             }
-                            client::MemberType::User => format!("{}", convo.channel.name),
+                            MemberType::User => format!("{}", convo.channel.name),
                         }),
                     )
                 }
@@ -151,7 +151,7 @@ impl Ui {
                         view.clear();
                         for msg in messages.iter().rev() {
                             match &msg.content {
-                                client::MessageType::Text { text } => view.add_child(
+                                MessageType::Text { text } => view.add_child(
                                     "",
                                     TextView::new(&format!(
                                         "{}: {}",
@@ -171,8 +171,8 @@ impl Ui {
 #[derive(Debug)]
 struct ApplicationState {
     current_conversation: Option<String>,
-    conversations: Vec<client::Conversation>,
-    chats: HashMap<String, Vec<client::Message>>,
+    conversations: Vec<Conversation>,
+    chats: HashMap<String, Vec<Message>>,
 }
 
 impl Default for ApplicationState {
@@ -185,102 +185,59 @@ impl Default for ApplicationState {
     }
 }
 
-struct AsyncClient {
-    sender: Sender<ClientMessage>,
-}
-
-impl AsyncClient {
-    pub fn new(sender: Sender<ClientMessage>) -> Self {
-        AsyncClient { sender }
-    }
-
-    pub fn fetch_conversations(&self) {
-        fetch_conversations(self.sender.clone());
-    }
-
-    pub fn fetch_messages(&self, conversation: client::Conversation) {
-        fetch_messages(self.sender.clone(), conversation);
-    }
-
-    pub fn listen(&self) {
-        client::listen(|value| {});
-    }
-}
-
-fn fetch_conversations(sender: Sender<ClientMessage>) {
-    debug!("Fetching conversations");
-    thread::spawn(move || {
-        let convos = client::list_conversations();
-        debug!("Fetched conversations");
-        sender
-            .send(ClientMessage::ReceiveConversations(convos))
-            .unwrap()
-    });
-}
-
-fn fetch_messages(sender: Sender<ClientMessage>, conversation: client::Conversation) {
-    debug!("Fetching channel messages");
-    thread::spawn(move || {
-        let messages = client::read_conversation(&conversation, 50);
-        debug!("Fetched messages for {}", &conversation.id);
-        sender
-            .send(ClientMessage::ReceiveMessages(conversation, messages))
-            .unwrap()
-    });
-}
-
-fn main() {
+fn main() -> Result<(), Error> {
     let mut builder = env_logger::Builder::from_default_env();
     builder.target(env_logger::Target::Stderr).init();
 
     info!("Starting...");
 
-    let (client_send, client_recv) = unbounded::<ClientMessage>();
+    let should_terminate = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(SIGTERM, Arc::clone(&should_terminate))?;
 
-    {
-        // kick off initial data request
-        client_send.send(ClientMessage::FetchConversations).unwrap();
-    }
-
-    let mut ui = Ui::new(client_send.clone());
+    let mut ui = Ui::new();
     debug!("Created Ui");
 
-    let client = AsyncClient::new(client_send.clone());
+    let mut client = Client::new();
+    let r = client.register();
+    client.fetch_conversations();
 
-    client.listen();
+    ui.cursive.set_user_data(client);
 
-    while ui.step() {
-        loop {
-            match client_recv.try_recv() {
-                Ok(msg) => match msg {
-                    ClientMessage::ReceiveConversations(convos) => {
-                        if ui.state.current_conversation.is_none() {
-                            ui.state.current_conversation = Some((convos[0]).id.clone());
-                            client_send
-                                .send(ClientMessage::FetchMessages(convos[0].clone()))
-                                .unwrap();
+    while !should_terminate.load(Ordering::Relaxed) && ui.step() {
+        let _client = ui.cursive.user_data::<Client>().unwrap();
+        _client.step();
+        select! {
+            recv(r) -> msg => {
+                if let Ok(value) = msg {
+                    match value {
+                        ClientMessage::ApiResponse(ApiResponse::ConversationList {conversations}) => {
+                            if ui.state.current_conversation.is_none() {
+                                ui.state.current_conversation = Some((conversations[0]).id.clone());
+                                _client.fetch_messages(&conversations[0], 20);
+                            }
+                            ui.state.conversations = conversations;
+                            debug!("State: {:?}", &ui.state);
+                            ui.ui_send.send(UiMessage::NewData).unwrap();
                         }
-                        ui.state.conversations = convos;
-                        debug!("State: {:?}", &ui.state);
-                        ui.ui_send.send(UiMessage::NewData).unwrap();
+                        ClientMessage::ApiResponse(ApiResponse::MessageList{messages, ..}) => {
+                            ui.state.chats.insert(messages[0].msg.conversation_id.clone(), messages.into_iter().map(|m| m.msg).collect());
+                            debug!("State: {:?}", &ui.state);
+                            ui.ui_send.send(UiMessage::NewData).unwrap();
+                        },
+                        ClientMessage::ApiResponse(_) => {
+                            debug!("unhandled event");
+                        },
+                        ClientMessage::ListenerEvent => {
+                            debug!("listener event");
+                        }
                     }
-                    ClientMessage::ReceiveMessages(convo, messages) => {
-                        ui.state.chats.insert(convo.id, messages);
-                        debug!("State: {:?}", &ui.state);
-                        ui.ui_send.send(UiMessage::NewData).unwrap();
-                    }
-                    ClientMessage::FetchConversations => client.fetch_conversations(),
-                    ClientMessage::FetchMessages(conversation_id) => {
-                        client.fetch_messages(conversation_id)
-                    }
-                },
-                Err(crossbeam::TryRecvError::Empty) => {
-                    break;
                 }
-                Err(e) => {
-                    error!("{}", e);
-                }
-            }
+            },
+            default => {},
         }
     }
+
+    let _client = ui.cursive.user_data::<Client>().unwrap();
+    _client.close();
+    Ok(())
 }
