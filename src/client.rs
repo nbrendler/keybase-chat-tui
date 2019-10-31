@@ -2,12 +2,11 @@ use std::io::{BufRead, BufReader, Error};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::thread;
 
-#[macro_use]
-use log::{error, info, debug};
 use crossbeam::channel::{select, unbounded, Receiver, Sender};
+use log::debug;
 use serde_json::{from_slice, from_str, from_value, json, to_string_pretty, to_writer, Value};
 
-use crate::types::{ApiResponseWrapper, Channel, ClientMessage, Conversation};
+use crate::types::{ApiResponseWrapper, Channel, ClientMessage, Conversation, ListenerEvent};
 
 pub struct Client {
     api_sender: Sender<Value>,
@@ -46,22 +45,20 @@ impl Client {
                 if let Ok(value) = msg {
                     if let Some(s) = &self.subscriber {
                         let deserialized = ClientMessage::ApiResponse(from_value::<ApiResponseWrapper>(value).expect("Failed to deserialize API response").result);
-                        s.send(deserialized);
+                        s.send(deserialized).unwrap();
                     }
                 }
             },
             recv(self.listener_receiver) -> msg => {
                 if let Ok(value) = msg {
-                    debug!("Received from listener: {:?}", &value);
+                    if let Some(s) = &self.subscriber {
+                        let deserialized = ClientMessage::ListenerEvent(from_value::<ListenerEvent>(value).expect("Failed to deserialize listener event"));
+                        s.send(deserialized).unwrap();
+                    }
                 }
             },
             default => {}
         };
-    }
-
-    pub fn run(&self) -> bool {
-        self.step();
-        true
     }
 
     pub fn close(&mut self) -> Result<(), Error> {

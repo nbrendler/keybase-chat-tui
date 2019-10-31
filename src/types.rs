@@ -1,6 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type")]
+pub enum ListenerEvent {
+    #[serde(rename = "chat")]
+    ChatMessage(MessageWrapper),
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct ApiResponseWrapper {
     pub result: ApiResponse,
 }
@@ -80,5 +87,5 @@ pub struct Sender {
 
 pub enum ClientMessage {
     ApiResponse(ApiResponse),
-    ListenerEvent,
+    ListenerEvent(ListenerEvent),
 }
