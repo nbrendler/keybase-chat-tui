@@ -1,6 +1,11 @@
-shadow = false
-borders = "none"
-
 [colors]
-primary = ["white"]
-highlight = "#ffffff"
+shadow = "#161925"
+background = "#161925"
+view = "#161925"
+primary = "#d3d7dc"
+secondary = "#6ded99"
+tertiary = "#51ed87"
+title_primary = "#e3264d"
+title_secondary = "#e34465"
+highlight = "#efd35a"
+highlight_inactive = "#77bof5"

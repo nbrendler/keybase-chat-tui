@@ -7,7 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [[bin]]
-name = "keybase-chat-tui"
+name = "keybase-chat-tui-bin"
 path = "src/main.rs"
 
 [dependencies]
@@ -18,3 +18,4 @@ serde =  { version = "1.0", features = ["derive"]}
 serde_json = "1.0"
 crossbeam = "0.7.2"
 signal-hook = "0.1.10"
+dirs = "2.0.2"

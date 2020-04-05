@@ -3,7 +3,7 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 use std::thread;
 
 use crossbeam::channel::{select, unbounded, Receiver, Sender};
-use log::debug;
+use log::{debug, info};
 use serde_json::{from_slice, from_str, from_value, json, to_string_pretty, to_writer, Value};
 
 use crate::types::{ApiResponseWrapper, Channel, ClientMessage, Conversation, ListenerEvent};
@@ -14,6 +14,12 @@ pub struct Client {
     listener_receiver: Receiver<Value>,
     subscriber: Option<Sender<ClientMessage>>,
     listener_handle: Child,
+}
+
+impl Default for Client {
+    fn default() -> Self {
+        Client::new()
+    }
 }
 
 impl Client {
@@ -39,7 +45,7 @@ impl Client {
         }
     }
 
-    pub fn step(&self) {
+    pub fn step(&self) -> bool {
         select! {
             recv(self.api_receiver) -> msg => {
                 if let Ok(value) = msg {
@@ -59,6 +65,8 @@ impl Client {
             },
             default => {}
         };
+
+        true
     }
 
     pub fn close(&mut self) -> Result<(), Error> {
@@ -125,12 +133,14 @@ fn run_api_command(sender: Sender<Value>, command: Value) {
     let stdin = child.stdin.take().unwrap();
 
     thread::spawn(move || {
+        info!("Sending Keybase Command");
         debug!("Keybase Command: {}", to_string_pretty(&command).unwrap());
         to_writer(stdin, &command).unwrap();
 
         let output = child.wait_with_output().unwrap();
 
         let parsed: Value = from_slice(output.stdout.as_slice()).unwrap();
+        info!("Got Keybase Response");
         debug!("Keybase Response: {}", to_string_pretty(&parsed).unwrap());
         sender.send(parsed).unwrap();
     });

@@ -89,3 +89,32 @@ pub enum ClientMessage {
     ApiResponse(ApiResponse),
     ListenerEvent(ListenerEvent),
 }
+
+#[derive(Clone, Debug)]
+pub struct ConversationData {
+    // keep track of whether we fetched this conversation
+    pub fetched: bool,
+    // messages we got from the API
+    pub messages: Vec<Message>,
+}
+
+impl Default for ConversationData {
+    fn default() -> Self {
+        ConversationData {
+            fetched: false,
+            messages: Vec::new(),
+        }
+    }
+}
+
+impl ConversationData {
+    pub fn new(messages: Vec<Message>) -> Self {
+        ConversationData {
+            fetched: true,
+            messages,
+        }
+    }
+    pub fn add_message(&mut self, message: Message) {
+        self.messages.insert(0, message);
+    }
+}
