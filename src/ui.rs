@@ -1,3 +1,7 @@
+// # ui.rs
+//
+// Contains the main UI struct and all the views that don't exist in their own module.
+
 use std::path::PathBuf;
 
 use crossbeam::{select, unbounded, Receiver, Sender};
@@ -10,7 +14,9 @@ use crate::types::{Conversation, ConversationData, Message, MessageType};
 use crate::views::conversation::{ConversationView, HasConversation};
 
 pub struct Ui {
+    // Cursive (Rust TUI library object)
     pub cursive: Cursive,
+    // Observer to handle state changes
     pub observer: UiObserver,
 }
 
@@ -18,6 +24,7 @@ impl Ui {
     pub fn new() -> Self {
         let mut siv = Cursive::default();
 
+        // load a theme from `$HOME/.config/keybase-chat-tui/theme.toml` (on linux)
         if let Some(dir) = config_dir() {
             let theme_path = PathBuf::new().join(dir).join("keybase-chat-tui/theme.toml");
             siv.load_theme_file(theme_path)
@@ -33,6 +40,7 @@ impl Ui {
             .title("keybase-chat-tui"),
         );
 
+        // focus the edit view (where you type) on the initial render
         siv.focus_id("edit").unwrap();
 
         Ui {
@@ -41,6 +49,7 @@ impl Ui {
         }
     }
 
+    // render one 'frame'
     pub fn step(&mut self) -> bool {
         if !self.cursive.is_running() {
             return false;
@@ -59,8 +68,10 @@ impl Ui {
                         }
                         StateChangeEvent::NewMessage(message, conversation_id, active) => {
                             if active {
+                                // write the message in the chat box
                                 self.new_message(&message);
                             } else {
+                                // highlight the conversation with unread messages
                                 self.unread_message(conversation_id.as_str());
                             }
 
@@ -188,10 +199,13 @@ impl StateObserver for UiObserver {
     }
 }
 
+// helper to create the view of available conversations on the left. Should probably go to its own
+// module.
 fn conversation_view(convo: Conversation) -> impl View {
     let id = convo.id.clone();
     let view = ConversationView::new(convo).with_id(id);
     OnEventView::new(view)
+        // handle left clicking on a conversation name
         .on_event_inner(
             EventTrigger::mouse(),
             |v: &mut IdView<ConversationView>, e: &Event| {
@@ -214,6 +228,7 @@ fn conversation_view(convo: Conversation) -> impl View {
                 }
             },
         )
+        // handle pressing enter when a conversation name has focus
         .on_event_inner(
             cursive::event::Key::Enter,
             |v: &mut IdView<ConversationView>, _e: &Event| {

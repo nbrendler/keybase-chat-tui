@@ -1,3 +1,8 @@
+// # client.rs
+//
+// A client struct which talks to the Keybase API, handles serialization and deserialization of the
+// messages and writing to the proper channels.
+
 use std::io::{BufRead, BufReader, Error};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::thread;
@@ -45,6 +50,9 @@ impl Client {
         }
     }
 
+    // Check if we got any messages that need to be processed. These could come from the API
+    // channel (things we asked for) or the listener channel (things keybase is pushing to us, like
+    // new chat messages).
     pub fn step(&self) -> bool {
         select! {
             recv(self.api_receiver) -> msg => {
@@ -63,22 +71,33 @@ impl Client {
                     }
                 }
             },
+            // Don't block until you get a message
             default => {}
         };
 
         true
     }
 
+    // Kill the listener process and propagate the result back up
     pub fn close(&mut self) -> Result<(), Error> {
         self.listener_handle.kill()?;
         Ok(())
     }
 
+    // Method for other code to call and subscribe to updates
+    // This can be improved to support multiple subscribers but not needed for this program.
     pub fn register(&mut self) -> Receiver<ClientMessage> {
         let (s, r) = unbounded::<ClientMessage>();
         self.subscriber = Some(s);
         r
     }
+
+    // ## Keybase Commands
+    //
+    // This is not an exhaustive list of Keybase commands -- I just implemented the bare minimum
+    // needed for my own chat usage. I found the best documentation on the commands is by running
+    // `keybase chat api -h`, they don't seem to have a public API documentation or I couldn't find
+    // it. It is open source, so you can also poke around their Go code if you wish.
 
     pub fn fetch_conversations(&self) {
         run_api_command(
@@ -120,6 +139,8 @@ impl Client {
     }
 }
 
+// helper to start the oneoff keybase process that will run our command, and then a thread that
+// waits for it to finish
 fn run_api_command(sender: Sender<Value>, command: Value) {
     let mut child = Command::new("keybase")
         .arg("chat")
@@ -130,6 +151,10 @@ fn run_api_command(sender: Sender<Value>, command: Value) {
         .expect("Failed to start keybase api process");
 
     debug!("Started process: {}", child.id());
+
+    // I found this is the best way to avoid all kinds of weirdness with the thread lifetime
+    // requirements. I can't give it the whole child object if I want to be able to kill it later
+    // (when we get a signal), so I just grab the stdin and move that into the thread.
     let stdin = child.stdin.take().unwrap();
 
     thread::spawn(move || {
@@ -146,6 +171,8 @@ fn run_api_command(sender: Sender<Value>, command: Value) {
     });
 }
 
+// helper to start the listener thread, which reads the keybase listener (a process that runs for as
+// long as the chat client runs) and sends any messages back.
 fn start_listener(stdout: ChildStdout, sender: Sender<Value>) {
     thread::spawn(move || {
         let mut f = BufReader::new(stdout);

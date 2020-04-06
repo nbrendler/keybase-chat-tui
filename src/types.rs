@@ -1,3 +1,10 @@
+// # types.rs
+//
+// Various type definitions used by all parts of the app. Mostly dumb structs with data inside
+// them, and lots of Serde annotations for serialization/deserialization.
+//
+// A lot of these were just trial and error while using the Keybase API and fixing serialization
+// errors.
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -114,6 +121,7 @@ impl ConversationData {
             messages,
         }
     }
+    // put the message at the beginning (messages are in time-descending order)
     pub fn add_message(&mut self, message: Message) {
         self.messages.insert(0, message);
     }
