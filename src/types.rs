@@ -71,6 +71,8 @@ pub enum MessageType {
     Text { text: MessageBody },
     #[serde(rename = "unfurl")]
     Unfurl {},
+    #[serde(rename = "reaction")]
+    Reaction {},
 }
 
 #[derive(Clone, Debug, Deserialize)]
