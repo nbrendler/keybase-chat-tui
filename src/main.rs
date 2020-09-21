@@ -6,7 +6,6 @@ use std::io::Error;
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
 
 use crossbeam::select;
-use env_logger;
 use log::info;
 use signal_hook::SIGTERM;
 
@@ -142,8 +141,5 @@ fn main() -> Result<(), Error> {
         });
     }
 
-    // Cleanup the client after receiving a signal to stop -- this is important so we don't leave
-    // zombie keybase processes.
-    state.with_data(|state_mut| state_mut.get_client_mut().close())?;
     Ok(())
 }

@@ -27,6 +27,12 @@ impl Default for Client {
     }
 }
 
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.listener_handle.kill().ok().unwrap();
+    }
+}
+
 impl Client {
     pub fn new() -> Self {
         let (s1, r1) = unbounded::<Value>();
@@ -76,12 +82,6 @@ impl Client {
         };
 
         true
-    }
-
-    // Kill the listener process and propagate the result back up
-    pub fn close(&mut self) -> Result<(), Error> {
-        self.listener_handle.kill()?;
-        Ok(())
     }
 
     // Method for other code to call and subscribe to updates
