@@ -3,22 +3,26 @@
 // A client struct which talks to the Keybase API, handles serialization and deserialization of the
 // messages and writing to the proper channels.
 
+use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Error};
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::rc::Rc;
 use std::thread;
 
 use crossbeam::channel::{select, unbounded, Receiver, Sender};
 use log::{debug, info};
 use serde_json::{from_slice, from_str, from_value, json, to_string_pretty, to_writer, Value};
 
-use crate::types::{ApiResponseWrapper, Channel, ClientMessage, Conversation, ListenerEvent};
+use crate::types::{
+    ApiResponseWrapper, Channel, ClientMessage, KeybaseConversation, ListenerEvent,
+};
 
 pub struct Client {
     api_sender: Sender<Value>,
     api_receiver: Receiver<Value>,
     listener_receiver: Receiver<Value>,
     subscriber: Option<Sender<ClientMessage>>,
-    listener_handle: Child,
+    listener_handle: Rc<RefCell<Child>>,
 }
 
 impl Default for Client {
@@ -29,7 +33,7 @@ impl Default for Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        self.listener_handle.kill().ok().unwrap();
+        self.listener_handle.borrow_mut().kill().ok().unwrap();
     }
 }
 
@@ -52,7 +56,7 @@ impl Client {
             api_receiver: r1,
             listener_receiver: r2,
             subscriber: None,
-            listener_handle: child,
+            listener_handle: Rc::new(RefCell::new(child)),
         }
     }
 
@@ -108,7 +112,7 @@ impl Client {
         );
     }
 
-    pub fn fetch_messages(&self, conversation: &Conversation, count: u32) {
+    pub fn fetch_messages(&self, conversation: &KeybaseConversation, count: u32) {
         run_api_command(
             self.api_sender.clone(),
             json!({

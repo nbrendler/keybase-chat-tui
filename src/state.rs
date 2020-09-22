@@ -21,11 +21,10 @@
 // of the main UI struct. This is still more coupling than I wanted originally, but it seems to
 // work OK. I'm sure a more experienced Rust developer could design this better!
 
+use std::collections::hash_map::Values;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
-use crate::client::Client;
-use crate::types::{Conversation, ConversationData, Message};
+use crate::types::{Conversation, Message};
 
 type ConversationId = String;
 
@@ -33,7 +32,7 @@ type ConversationId = String;
 // notifications when state changes. The APIs are all a little hodge-podge depending on what I
 // needed to render in each case.
 pub trait StateObserver {
-    fn on_conversation_change(&mut self, title: &str, data: &ConversationData);
+    fn on_conversation_change(&mut self, data: &Conversation);
     fn on_conversations_added(&mut self, data: &[Conversation]);
     fn on_message(&mut self, data: &Message, conversation_id: &str, active: bool);
 }
@@ -41,126 +40,193 @@ pub trait StateObserver {
 // This is the inner struct that lives inside the Arc<Mutex> which masquerades as the actual state.
 #[derive(Default)]
 pub struct ApplicationStateInner {
-    client: Client,
     // conversation id of the currently displayed conversation
     current_conversation: Option<ConversationId>,
-    // list of available conversations displayed on the left. I'm using a Vec to make rendering
-    // easier, but I think this could probably be combined with the HashMap below and just index by
-    // conversation id. We end up searching through this Vec using `find` to get the Conversation
-    // by id multiple times, and only render once per app run.
-    //
-    // TODO: merge with the other hash map
-    conversations: Vec<Conversation>,
+
     // map of chat messages by conversation id
-    chats: HashMap<ConversationId, ConversationData>,
+    conversations: HashMap<ConversationId, Conversation>,
 
     // List of registered observers
     observers: Vec<Box<dyn StateObserver>>,
 }
 
-// There's a lot of string stuff going on here that is probably done wrong. I tried to stick with
-// the rule of thumb that the state in this file should own the strings (using `String`), and data
-// should go in or out as read-only slices (`&str`), but I think it's still doing some unnecessary
-// allocations here. I can come back to it with a deeper understanding later.
-impl ApplicationStateInner {
-    pub fn get_client_mut(&mut self) -> &mut Client {
-        &mut self.client
+pub struct Conversations<'a, I: Iterator<Item = &'a Conversation>> {
+    inner: I,
+}
+
+impl<'a, I: Iterator<Item = &'a Conversation>> Iterator for Conversations<'a, I> {
+    type Item = &'a Conversation;
+
+    #[inline]
+    fn next(&mut self) -> Option<&'a Conversation> {
+        self.inner.next()
+    }
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'a, I: ExactSizeIterator + Iterator<Item = &'a Conversation>> ExactSizeIterator
+    for Conversations<'a, I>
+{
+    #[inline]
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
+pub trait ApplicationState {
+    fn insert_conversation(&mut self, conversation: Conversation);
+    fn insert_message(&mut self, conversation_id: &str, message: Message);
+    fn set_current_conversation(&mut self, conversation_id: &str);
+    fn get_current_conversation(&self) -> Option<&Conversation>;
+    fn set_conversations(&mut self, conversations: Vec<Conversation>);
+    fn get_conversations(&self) -> Conversations<Values<'_, String, Conversation>>;
+    fn register_observer(&mut self, observer: Box<dyn StateObserver>);
+    fn get_conversation(&self, conversation_id: &str) -> Option<&Conversation>;
+    fn get_conversation_mut(&mut self, conversation_id: &str) -> Option<&mut Conversation>;
+}
+
+impl ApplicationState for ApplicationStateInner {
+    fn insert_conversation(&mut self, conversation: Conversation) {
+        self.conversations
+            .insert(conversation.id.clone(), conversation);
     }
 
-    pub fn add_chat(&mut self, conversation_id: &str, data: ConversationData) {
-        let title = &self
-            .conversations
-            .iter()
-            .find(|convo| convo.id == conversation_id)
-            .unwrap()
-            .channel
-            .name;
-        self.observers
-            .iter_mut()
-            .for_each(|o| o.on_conversation_change(&title, &data));
-        self.chats.insert(conversation_id.to_owned(), data);
-    }
-
-    pub fn add_chat_message(&mut self, conversation_id: &str, message: Message) {
+    // should return a result
+    fn insert_message(&mut self, conversation_id: &str, message: Message) {
         let is_active = {
-            match self.current_conversation {
-                Some(ref convo_id) => convo_id.as_str() == conversation_id,
-                None => false,
+            if let Some(convo) = self.get_current_conversation() {
+                convo.id == conversation_id
+            } else {
+                false
             }
         };
-        self.observers
-            .iter_mut()
-            .for_each(|o| o.on_message(&message, conversation_id, is_active));
-        let e = { self.get_or_insert_entry(&conversation_id.to_owned()) };
-        e.add_message(message);
+        if let Some(convo) = self.conversations.get_mut(conversation_id) {
+            self.observers
+                .iter_mut()
+                .for_each(|o| o.on_message(&message, conversation_id, is_active));
+            convo.insert_message(message);
+        }
     }
 
-    pub fn set_current_conversation(&mut self, conversation_id: &str) {
-        self.current_conversation = Some(conversation_id.to_owned());
+    // should return a result
+    fn set_current_conversation(&mut self, conversation_id: &str) {
+        if let Some(convo) = self.conversations.get(conversation_id) {
+            self.current_conversation = Some(conversation_id.to_string());
+            self.observers
+                .iter_mut()
+                .for_each(|o| o.on_conversation_change(convo));
+        }
     }
 
-    pub fn set_conversations(&mut self, conversations: Vec<Conversation>) {
+    fn get_current_conversation(&self) -> Option<&Conversation> {
+        if let Some(id) = &self.current_conversation {
+            if let Some(convo) = self.conversations.get(id) {
+                return Some(convo);
+            }
+        }
+        None
+    }
+
+    fn set_conversations(&mut self, conversations: Vec<Conversation>) {
         self.observers
             .iter_mut()
             .for_each(|o| o.on_conversations_added(conversations.as_slice()));
-        self.conversations = conversations;
-    }
 
-    pub fn switch_to_conversation(&mut self, conversation: &Conversation) {
-        let e = self.get_or_insert_entry(&conversation.id);
-        if !e.fetched {
-            self.client.fetch_messages(conversation, 20);
-        }
-        let conversation_data = self.chats.get(&conversation.id).unwrap();
-        self.observers
-            .iter_mut()
-            .for_each(|o| o.on_conversation_change(&conversation.channel.name, conversation_data));
-        self.set_current_conversation(&conversation.id);
-    }
-
-    pub fn send_message(&mut self, message: String) {
-        match &mut self.current_conversation {
-            Some(convo_id) => {
-                let data = self
-                    .conversations
-                    .iter()
-                    .find(|c| c.id.eq(convo_id))
-                    .unwrap();
-                let channel = &data.channel;
-                self.client.send_message(channel, message);
-            }
-            None => {
-                panic!("tried to send a message without a current conversation");
-            }
+        for convo in conversations.into_iter() {
+            self.conversations.insert(convo.id.clone(), convo);
         }
     }
 
-    pub fn register_observer(&mut self, observer: Box<dyn StateObserver>) {
-        self.observers.push(observer);
+    fn get_conversations(&self) -> Conversations<Values<'_, String, Conversation>> {
+        Conversations {
+            inner: self.conversations.values(),
+        }
     }
 
-    // helper function for getting a defaultdict-like behavior on the chats HashMap
-    fn get_or_insert_entry(&mut self, conversation_id: &str) -> &mut ConversationData {
-        self.chats
-            .entry(conversation_id.to_owned())
-            .or_insert_with(ConversationData::default)
+    fn register_observer(&mut self, observer: Box<dyn StateObserver>) {
+        self.observers.push(observer)
+    }
+
+    fn get_conversation(&self, conversation_id: &str) -> Option<&Conversation> {
+        self.conversations.get(conversation_id)
+    }
+
+    fn get_conversation_mut(&mut self, conversation_id: &str) -> Option<&mut Conversation> {
+        self.conversations.get_mut(conversation_id)
     }
 }
 
-#[derive(Clone)]
-pub struct ApplicationState {
-    inner: Arc<Mutex<ApplicationStateInner>>,
-}
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::types::{Channel, KeybaseConversation, MemberType};
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
-impl ApplicationState {
-    pub fn new() -> Self {
-        ApplicationState {
-            inner: Arc::new(Mutex::new(ApplicationStateInner::default())),
+    struct TestObserver {
+        conversation_change_called: bool,
+        conversations_added_called: bool,
+        message_called: bool,
+    }
+
+    impl StateObserver for Rc<RefCell<TestObserver>> {
+        fn on_conversation_change(&mut self, _: &Conversation) {
+            self.borrow_mut().conversation_change_called = true;
+        }
+
+        fn on_conversations_added(&mut self, _: &[Conversation]) {
+            self.borrow_mut().conversations_added_called = true;
+        }
+
+        fn on_message(&mut self, _: &Message, _: &str, _: bool) {
+            self.borrow_mut().message_called = true;
         }
     }
 
-    // Hiding all the mutex ugliness with this callback-based interface
-    pub fn with_data<R, F: FnOnce(&mut ApplicationStateInner) -> R>(&mut self, f: F) -> R {
-        f(&mut self.inner.lock().unwrap())
+    impl Default for TestObserver {
+        fn default() -> Self {
+            TestObserver {
+                conversation_change_called: false,
+                conversations_added_called: false,
+                message_called: false,
+            }
+        }
+    }
+
+    #[test]
+    fn initial_state() {
+        let state = ApplicationStateInner::default();
+
+        assert!(state.get_conversations().is_empty());
+        assert!(state.get_current_conversation().is_none());
+        assert!(state.observers.is_empty());
+    }
+
+    #[test]
+    fn set_current_convo() {
+        let mut state = ApplicationStateInner::default();
+
+        let obs = Rc::new(RefCell::new(TestObserver::default()));
+        state.register_observer(Box::new(obs.clone()));
+
+        state.insert_conversation(
+            KeybaseConversation {
+                id: "test".to_string(),
+                unread: false,
+                channel: Channel {
+                    name: "My Channel".to_string(),
+                    topic_name: "".to_string(),
+                    members_type: MemberType::User,
+                },
+            }
+            .into(),
+        );
+        state.set_current_conversation("test");
+
+        assert_eq!(state.get_current_conversation().unwrap().id, "test");
+        assert!(obs.borrow().conversation_change_called);
     }
 }

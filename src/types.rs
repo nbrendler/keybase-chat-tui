@@ -22,12 +22,18 @@ pub struct ApiResponseWrapper {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum ApiResponse {
-    ConversationList { conversations: Vec<Conversation> },
-    MessageList { messages: Vec<MessageWrapper> },
-    MessageSent { message: String },
+    ConversationList {
+        conversations: Vec<KeybaseConversation>,
+    },
+    MessageList {
+        messages: Vec<MessageWrapper>,
+    },
+    MessageSent {
+        message: String,
+    },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(PartialOrd, Eq, PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum MemberType {
     #[serde(rename = "impteamnative")]
     User,
@@ -35,7 +41,7 @@ pub enum MemberType {
     Team,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(PartialOrd, Eq, PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub struct Channel {
     pub name: String,
     #[serde(default)]
@@ -43,8 +49,8 @@ pub struct Channel {
     pub members_type: MemberType,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct Conversation {
+#[derive(PartialOrd, PartialEq, Clone, Debug, Deserialize)]
+pub struct KeybaseConversation {
     pub id: String,
     pub channel: Channel,
     pub unread: bool,
@@ -57,7 +63,6 @@ pub struct MessageBody {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type")]
-#[allow(non_camel_case_types)]
 pub enum MessageType {
     #[serde(rename = "join")]
     Join,
@@ -99,32 +104,55 @@ pub enum ClientMessage {
     ListenerEvent(ListenerEvent),
 }
 
+pub enum UiMessage {
+    SendMessage(String),
+    SwitchConversation(String),
+}
+
 #[derive(Clone, Debug)]
-pub struct ConversationData {
+pub struct Conversation {
+    // id of the conversation (from Keybase)
+    pub id: String,
     // keep track of whether we fetched this conversation
     pub fetched: bool,
     // messages we got from the API
     pub messages: Vec<Message>,
+
+    pub data: KeybaseConversation,
 }
 
-impl Default for ConversationData {
-    fn default() -> Self {
-        ConversationData {
-            fetched: false,
-            messages: Vec::new(),
-        }
-    }
-}
-
-impl ConversationData {
-    pub fn new(messages: Vec<Message>) -> Self {
-        ConversationData {
-            fetched: true,
-            messages,
-        }
-    }
+impl Conversation {
     // put the message at the beginning (messages are in time-descending order)
-    pub fn add_message(&mut self, message: Message) {
+    pub fn insert_message(&mut self, message: Message) {
         self.messages.insert(0, message);
+    }
+
+    pub fn insert_messages(&mut self, mut messages: Vec<Message>) {
+        // assume these are already in time-descending order, so we swap them and then append the
+        // older ones
+        std::mem::swap(&mut self.messages, &mut messages);
+        self.messages.extend(messages);
+    }
+
+    pub fn get_name(&self) -> String {
+        match self.data.channel.members_type {
+            MemberType::Team => format!(
+                "{}#{}",
+                &self.data.channel.name, &self.data.channel.topic_name
+            ),
+            // TODO: remove the username from the channel name for display
+            MemberType::User => self.data.channel.name.to_string(),
+        }
+    }
+}
+
+impl From<KeybaseConversation> for Conversation {
+    fn from(kb: KeybaseConversation) -> Conversation {
+        Conversation {
+            id: kb.id.clone(),
+            fetched: false,
+            messages: vec![],
+            data: kb,
+        }
     }
 }

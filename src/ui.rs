@@ -9,15 +9,17 @@ use cursive::{event::*, view::*, views::*, Cursive};
 use dirs::config_dir;
 use log::debug;
 
-use crate::state::{ApplicationState, StateObserver};
-use crate::types::{Conversation, ConversationData, Message, MessageType};
-use crate::views::conversation::{ConversationView, HasConversation};
+use crate::state::StateObserver;
+use crate::types::{Conversation, Message, MessageType, UiMessage};
+use crate::views::conversation::{ConversationName, ConversationView};
 
 pub struct Ui {
     // Cursive (Rust TUI library object)
     pub cursive: Cursive,
     // Observer to handle state changes
     pub observer: UiObserver,
+
+    pub executor: UiExecutor,
 }
 
 impl Ui {
@@ -42,10 +44,13 @@ impl Ui {
 
         // focus the edit view (where you type) on the initial render
         siv.focus_id("edit").unwrap();
+        let executor = UiExecutor::new();
+        siv.set_user_data(executor.clone());
 
         Ui {
             cursive: siv,
             observer: UiObserver::new(),
+            executor,
         }
     }
 
@@ -62,8 +67,8 @@ impl Ui {
                         StateChangeEvent::ConversationsAdded(conversations) => {
                             self.render_conversation_list(conversations.as_slice());
                         }
-                        StateChangeEvent::ConversationChange(title, conversation) => {
-                            self.render_conversation(title.as_str(), &conversation);
+                        StateChangeEvent::ConversationChange(conversation) => {
+                            self.render_conversation(&conversation.get_name(), &conversation);
                             self.cursive.focus_id("edit").unwrap();
                         }
                         StateChangeEvent::NewMessage(message, conversation_id, active) => {
@@ -92,14 +97,14 @@ impl Ui {
             .call_on_id("conversation_list", |view: &mut ListView| {
                 view.clear();
                 for convo in data.iter() {
-                    debug!("Adding child: {}", &convo.channel.name);
+                    debug!("Adding child: {}", &convo.get_name());
                     view.add_child("", conversation_view(convo.clone()))
                 }
             });
         self.cursive.refresh();
     }
 
-    fn render_conversation(&mut self, title: &str, data: &ConversationData) {
+    fn render_conversation(&mut self, title: &str, data: &Conversation) {
         self.cursive
             .call_on_id("chat_container", |view: &mut TextView| {
                 view.set_content("");
@@ -148,9 +153,25 @@ fn render_message(view: &mut TextView, message: &Message) {
 }
 
 pub enum StateChangeEvent {
-    ConversationChange(String, ConversationData),
+    ConversationChange(Conversation),
     ConversationsAdded(Vec<Conversation>),
     NewMessage(Message, String, bool),
+}
+
+#[derive(Clone)]
+pub struct UiExecutor {
+    sender: Sender<UiMessage>,
+    pub receiver: Receiver<UiMessage>,
+}
+
+impl UiExecutor {
+    fn new() -> Self {
+        let (send, recv) = unbounded::<UiMessage>();
+        UiExecutor {
+            sender: send,
+            receiver: recv,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -170,19 +191,15 @@ impl UiObserver {
 }
 
 impl StateObserver for UiObserver {
-    fn on_conversation_change(&mut self, title: &str, data: &ConversationData) {
+    fn on_conversation_change(&mut self, data: &Conversation) {
         self.sender
-            .send(StateChangeEvent::ConversationChange(
-                title.to_owned(),
-                data.clone(),
-            ))
+            .send(StateChangeEvent::ConversationChange(data.clone()))
             .unwrap();
     }
 
     fn on_conversations_added(&mut self, conversations: &[Conversation]) {
         self.sender
             .send(StateChangeEvent::ConversationsAdded(
-                // is this allocating?
                 conversations.to_owned(),
             ))
             .unwrap();
@@ -214,13 +231,13 @@ fn conversation_view(convo: Conversation) -> impl View {
                     ..
                 } = *e
                 {
-                    let convo = v.conversation();
+                    let convo = v.conversation_id();
 
                     Some(EventResult::with_cb(move |s| {
-                        s.with_user_data(|state: &mut ApplicationState| {
-                            state.with_data(|state_mut| {
-                                state_mut.switch_to_conversation(&convo);
-                            });
+                        s.with_user_data(|executor: &mut UiExecutor| {
+                            executor
+                                .sender
+                                .send(UiMessage::SwitchConversation(convo.clone()));
                         });
                     }))
                 } else {
@@ -232,13 +249,13 @@ fn conversation_view(convo: Conversation) -> impl View {
         .on_event_inner(
             cursive::event::Key::Enter,
             |v: &mut IdView<ConversationView>, _e: &Event| {
-                let convo = v.conversation();
+                let convo = v.conversation_id();
 
                 Some(EventResult::with_cb(move |s| {
-                    s.with_user_data(|state: &mut ApplicationState| {
-                        state.with_data(|state_mut| {
-                            state_mut.switch_to_conversation(&convo);
-                        });
+                    s.with_user_data(|executor: &mut UiExecutor| {
+                        executor
+                            .sender
+                            .send(UiMessage::SwitchConversation(convo.clone()));
                     });
                 }))
             },
@@ -251,10 +268,8 @@ fn send_chat_message(s: &mut Cursive, msg: &str) {
     }
 
     s.call_on_id("edit", |view: &mut EditView| view.set_content(""));
-    s.with_user_data(|state: &mut ApplicationState| {
-        state.with_data(|state_mut| {
-            state_mut.send_message(msg.to_owned());
-        });
+    s.with_user_data(|executor: &mut UiExecutor| {
+        executor.sender.send(UiMessage::SendMessage(msg.to_owned()));
     });
 }
 

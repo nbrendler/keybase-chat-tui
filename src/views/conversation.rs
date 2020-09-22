@@ -4,12 +4,13 @@ use cursive::theme::ColorStyle;
 use cursive::view::{View, ViewWrapper};
 use cursive::{Printer, Vec2};
 
-use crate::types::{Conversation, MemberType};
+use crate::types::Conversation;
 
 const MAX_NAME_LENGTH: usize = 20;
 
-pub trait HasConversation: View {
-    fn conversation(&self) -> Conversation;
+pub trait ConversationName: View {
+    fn name(&self) -> String;
+    fn conversation_id(&self) -> String;
 }
 
 pub struct ConversationView {
@@ -26,31 +27,32 @@ impl ConversationView {
     }
 }
 
-impl HasConversation for ConversationView {
-    fn conversation(&self) -> Conversation {
-        self.conversation.clone()
+impl ConversationName for ConversationView {
+    fn name(&self) -> String {
+        self.conversation.get_name()
+    }
+
+    fn conversation_id(&self) -> String {
+        self.conversation.id.to_owned()
     }
 }
 
-impl<T> HasConversation for T
+impl<T> ConversationName for T
 where
     T: ViewWrapper<V = ConversationView>,
 {
-    fn conversation(&self) -> Conversation {
-        self.with_view(|v| v.conversation()).unwrap()
+    fn name(&self) -> String {
+        self.with_view(|v| v.name()).unwrap()
+    }
+
+    fn conversation_id(&self) -> String {
+        self.with_view(|v| v.conversation_id()).unwrap()
     }
 }
 
 impl View for ConversationView {
     fn draw(&self, printer: &Printer) {
-        let name = match &self.conversation.channel.members_type {
-            MemberType::Team => format!(
-                "{}#{}",
-                &self.conversation.channel.name, &self.conversation.channel.topic_name
-            ),
-            // TODO: remove the username from the channel name for display
-            MemberType::User => self.conversation.channel.name.to_string(),
-        };
+        let name = self.name();
         let offset = Align::top_left().v.get_offset(1, printer.size.y);
         let printer = &printer.offset((0, offset));
 
@@ -77,9 +79,6 @@ impl View for ConversationView {
     }
 
     fn required_size(&mut self, _: Vec2) -> Vec2 {
-        Vec2::new(
-            (self.conversation.channel.name.len() + 1).min(MAX_NAME_LENGTH),
-            1,
-        )
+        Vec2::new((self.name().len() + 1).min(MAX_NAME_LENGTH), 1)
     }
 }
