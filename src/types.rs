@@ -99,11 +99,6 @@ pub struct Sender {
     pub device_name: String,
 }
 
-pub enum ClientMessage {
-    ApiResponse(ApiResponse),
-    ListenerEvent(ListenerEvent),
-}
-
 pub enum UiMessage {
     SendMessage(String),
     SwitchConversation(String),

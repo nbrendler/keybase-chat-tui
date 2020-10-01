@@ -2,27 +2,24 @@
 //
 // Contains the main UI struct and all the views that don't exist in their own module.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
-use crossbeam::{select, unbounded, Receiver, Sender};
 use cursive::{event::*, view::*, views::*, Cursive};
 use dirs::config_dir;
 use log::debug;
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::state::StateObserver;
 use crate::types::{Conversation, Message, MessageType, UiMessage};
 use crate::views::conversation::{ConversationName, ConversationView};
 
-pub struct Ui {
-    // Cursive (Rust TUI library object)
-    pub cursive: Cursive,
-    // Observer to handle state changes
-    pub observer: UiObserver,
-
-    pub executor: UiExecutor,
+pub struct UiBuilder {
+    cursive: Cursive,
 }
 
-impl Ui {
+impl UiBuilder {
     pub fn new() -> Self {
         let mut siv = Cursive::default();
 
@@ -44,47 +41,39 @@ impl Ui {
 
         // focus the edit view (where you type) on the initial render
         siv.focus_id("edit").unwrap();
-        let executor = UiExecutor::new();
-        siv.set_user_data(executor.clone());
 
-        Ui {
-            cursive: siv,
-            observer: UiObserver::new(),
-            executor,
-        }
+        UiBuilder { cursive: siv }
     }
 
+    pub fn build(mut self) -> (Rc<RefCell<Ui>>, Receiver<UiMessage>) {
+        let (ui_send, ui_recv) = mpsc::channel(32);
+        let executor = UiExecutor {
+            sender: ui_send,
+        };
+
+        self.cursive.set_user_data(executor.clone());
+
+        (
+            Rc::new(RefCell::new(Ui {
+                cursive: self.cursive,
+                executor,
+            })),
+            ui_recv,
+        )
+    }
+}
+
+pub struct Ui {
+    // Cursive (Rust TUI library object)
+    cursive: Cursive,
+    executor: UiExecutor,
+}
+
+impl Ui {
     // render one 'frame'
     pub fn step(&mut self) -> bool {
         if !self.cursive.is_running() {
             return false;
-        }
-
-        select! {
-            recv(self.observer.receiver) -> msg => {
-                if let Ok(value) = msg {
-                    match value {
-                        StateChangeEvent::ConversationsAdded(conversations) => {
-                            self.render_conversation_list(conversations.as_slice());
-                        }
-                        StateChangeEvent::ConversationChange(conversation) => {
-                            self.render_conversation(&conversation.get_name(), &conversation);
-                            self.cursive.focus_id("edit").unwrap();
-                        }
-                        StateChangeEvent::NewMessage(message, conversation_id, active) => {
-                            if active {
-                                // write the message in the chat box
-                                self.new_message(&message);
-                            } else {
-                                // highlight the conversation with unread messages
-                                self.unread_message(conversation_id.as_str());
-                            }
-
-                        }
-                    }
-                }
-            },
-            default => {}
         }
 
         self.cursive.step();
@@ -104,7 +93,7 @@ impl Ui {
         self.cursive.refresh();
     }
 
-    fn render_conversation(&mut self, title: &str, data: &Conversation) {
+    fn render_conversation(&mut self, data: &Conversation) {
         self.cursive
             .call_on_id("chat_container", |view: &mut TextView| {
                 view.set_content("");
@@ -114,7 +103,7 @@ impl Ui {
             });
         self.cursive
             .call_on_id("chat_panel", |view: &mut Panel<LinearLayout>| {
-                view.set_title(title);
+                view.set_title(data.get_name());
             });
         self.cursive.refresh();
     }
@@ -152,68 +141,45 @@ fn render_message(view: &mut TextView, message: &Message) {
     }
 }
 
-pub enum StateChangeEvent {
-    ConversationChange(Conversation),
-    ConversationsAdded(Vec<Conversation>),
-    NewMessage(Message, String, bool),
-}
-
-#[derive(Clone)]
-pub struct UiExecutor {
-    sender: Sender<UiMessage>,
-    pub receiver: Receiver<UiMessage>,
-}
-
-impl UiExecutor {
-    fn new() -> Self {
-        let (send, recv) = unbounded::<UiMessage>();
-        UiExecutor {
-            sender: send,
-            receiver: recv,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct UiObserver {
-    pub sender: Sender<StateChangeEvent>,
-    receiver: Receiver<StateChangeEvent>,
-}
-
-impl UiObserver {
-    fn new() -> Self {
-        let (send, recv) = unbounded::<StateChangeEvent>();
-        UiObserver {
-            sender: send,
-            receiver: recv,
-        }
-    }
-}
-
-impl StateObserver for UiObserver {
+impl StateObserver for Ui {
     fn on_conversation_change(&mut self, data: &Conversation) {
-        self.sender
-            .send(StateChangeEvent::ConversationChange(data.clone()))
-            .unwrap();
+        self.render_conversation(data);
+        self.cursive.focus_id("edit").unwrap();
     }
 
     fn on_conversations_added(&mut self, conversations: &[Conversation]) {
-        self.sender
-            .send(StateChangeEvent::ConversationsAdded(
-                conversations.to_owned(),
-            ))
-            .unwrap();
+        self.render_conversation_list(conversations);
     }
 
     fn on_message(&mut self, message: &Message, conversation_id: &str, active: bool) {
-        self.sender
-            .send(StateChangeEvent::NewMessage(
-                message.clone(),
-                conversation_id.to_owned(),
-                active,
-            ))
-            .unwrap();
+        if active {
+            // write the message in the chat box
+            self.new_message(&message);
+        } else {
+            // highlight the conversation with unread messages
+            self.unread_message(conversation_id);
+        }
     }
+}
+
+impl StateObserver for Rc<RefCell<Ui>> {
+    fn on_conversation_change(&mut self, data: &Conversation) {
+        self.borrow_mut().on_conversation_change(data)
+    }
+
+    fn on_conversations_added(&mut self, conversations: &[Conversation]) {
+        self.borrow_mut().on_conversations_added(conversations)
+    }
+
+    fn on_message(&mut self, message: &Message, conversation_id: &str, active: bool) {
+        self.borrow_mut()
+            .on_message(message, conversation_id, active)
+    }
+}
+
+#[derive(Clone)]
+struct UiExecutor {
+    sender: Sender<UiMessage>,
 }
 
 // helper to create the view of available conversations on the left. Should probably go to its own
@@ -225,7 +191,16 @@ fn conversation_view(convo: Conversation) -> impl View {
         // handle left clicking on a conversation name
         .on_event_inner(
             EventTrigger::mouse(),
-            |v: &mut IdView<ConversationView>, e: &Event| {
+            handle_switch
+        )
+        // handle pressing enter when a conversation name has focus
+        .on_event_inner(
+            cursive::event::Key::Enter,
+            handle_switch
+        )
+}
+
+fn handle_switch(v: &mut IdView<ConversationView>, e: &Event) -> Option<EventResult> {
                 if let Event::Mouse {
                     event: MouseEvent::Release(MouseButton::Left),
                     ..
@@ -235,31 +210,16 @@ fn conversation_view(convo: Conversation) -> impl View {
 
                     Some(EventResult::with_cb(move |s| {
                         s.with_user_data(|executor: &mut UiExecutor| {
-                            executor
-                                .sender
-                                .send(UiMessage::SwitchConversation(convo.clone()));
+                            let mut exec = executor.clone();
+                            let c = convo.clone();
+                            tokio::spawn(async move {
+                                exec.sender.send(UiMessage::SwitchConversation(c)).await;
+                            });
                         });
                     }))
                 } else {
                     None
                 }
-            },
-        )
-        // handle pressing enter when a conversation name has focus
-        .on_event_inner(
-            cursive::event::Key::Enter,
-            |v: &mut IdView<ConversationView>, _e: &Event| {
-                let convo = v.conversation_id();
-
-                Some(EventResult::with_cb(move |s| {
-                    s.with_user_data(|executor: &mut UiExecutor| {
-                        executor
-                            .sender
-                            .send(UiMessage::SwitchConversation(convo.clone()));
-                    });
-                }))
-            },
-        )
 }
 
 fn send_chat_message(s: &mut Cursive, msg: &str) {
@@ -269,7 +229,11 @@ fn send_chat_message(s: &mut Cursive, msg: &str) {
 
     s.call_on_id("edit", |view: &mut EditView| view.set_content(""));
     s.with_user_data(|executor: &mut UiExecutor| {
-        executor.sender.send(UiMessage::SendMessage(msg.to_owned()));
+        let mut exec = executor.clone();
+        let c = msg.to_owned();
+        tokio::spawn(async move {
+            exec.sender.send(UiMessage::SendMessage(c)).await;
+        });
     });
 }
 

@@ -6,10 +6,7 @@
 #[macro_use]
 extern crate log;
 
-use std::io::Error;
-use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
-
-use signal_hook::SIGTERM;
+use tokio::time::{delay_for, Duration, Instant};
 
 mod client;
 mod controller;
@@ -21,9 +18,10 @@ mod views;
 use crate::client::Client;
 use crate::controller::Controller;
 use crate::state::{ApplicationState, ApplicationStateInner};
-use crate::ui::Ui;
+use crate::ui::UiBuilder;
 
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Only enable the logging when compiling in debug mode. This makes the difference between
     // `info!` and `debug!` somewhat moot, so I'm just using them to switch between a 'normal'
     // amount of logging and 'excessive'.
@@ -35,30 +33,32 @@ fn main() -> Result<(), Error> {
 
     info!("Starting...");
 
-    // Keep track of whether we should exit (i.e., we got a sigterm)
-    let should_terminate = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(SIGTERM, Arc::clone(&should_terminate))?;
-
-    let client = Client::default();
-    client.fetch_conversations();
-
     // The UI object has all of the cursive (rust tui library) logic.
-    let mut ui = Ui::new();
-
-    // State is a dumb model. The UI observer is called when state changes.
+    let (ui, ui_recv) = UiBuilder::new().build();
     let mut state = ApplicationStateInner::default();
-    state.register_observer(Box::new(ui.observer.clone()));
 
-    // The controller coordinates updates to the state and client fetches
-    let mut controller = Controller::new(client, state, ui.executor.receiver.clone());
+    state.register_observer(Box::new(ui.clone()));
+    let client = Client::new();
+    let mut controller = Controller::new(client, state, ui_recv);
 
-    // ## main render loop
-    //
-    // After handling any signals, progress the UI one 'frame' (step). This allows the UI to handle
-    // any messages it got from channels, and also for the TUI library to process events and render a frame.
-    while !should_terminate.load(Ordering::Relaxed) && ui.step() {
-        controller.step();
+    controller.init().await?;
+
+    tokio::select! {
+        _ = controller.process_events() => {}
+        _ = async {
+            let mut next_frame = Instant::now() + Duration::from_millis(16);
+            loop {
+                let now = Instant::now();
+                if now < next_frame {
+                    delay_for(next_frame - now).await;
+                }
+                if !ui.borrow_mut().step() {
+                    break
+                }
+                next_frame = Instant::now() + Duration::from_millis(16);
+
+            }
+        } => { info!("Exiting."); }
     }
-
     Ok(())
 }
