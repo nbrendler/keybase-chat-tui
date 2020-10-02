@@ -9,15 +9,25 @@ use std::error::Error;
 use tokio::process::{Child, Command};
 use tokio::io::{BufReader, AsyncReadExt, AsyncWriteExt, AsyncBufReadExt};
 use tokio::sync::mpsc::{self, Sender, Receiver};
-use log::{debug, info};
 use serde_json::{from_str, from_value, json, to_string_pretty, Value};
+use async_trait::async_trait;
 
 use crate::types::{
     Message, ApiResponseWrapper, ApiResponse, Channel, KeybaseConversation, ListenerEvent,
 };
 
+#[async_trait]
+pub trait KeybaseClient {
+    fn get_receiver(&mut self) -> Receiver<ListenerEvent>;
+    async fn fetch_conversations(&self) -> Result<Vec<KeybaseConversation>, Box<dyn Error>>;
+    async fn fetch_messages(&self, conversation: &KeybaseConversation, count: u32) -> Result<Vec<Message>, Box<dyn Error>>;
+    async fn send_message<T: Into<String> + Send>(&self, channel: &Channel, message: T) -> Result<(), Box<dyn Error>>;
+}
+
 pub struct Client {
+    receiver: Option<Receiver<ListenerEvent>>,
     subscriber: Option<Sender<ListenerEvent>>,
+    listener: Option<Child>
 }
 
 impl Default for Client {
@@ -26,29 +36,22 @@ impl Default for Client {
     }
 }
 
-impl Client {
-    pub fn new() -> Self {
-        Client {
-            subscriber: None,
+impl Drop for Client {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.listener.take() {
+            c.kill().unwrap()
         }
     }
+}
 
-    // Method for other code to call and subscribe to updates
-    // This can be improved to support multiple subscribers but not needed for this program.
-    pub fn register(&mut self) -> Receiver<ListenerEvent> {
-        let (s, r) = mpsc::channel(32);
-        self.subscriber = Some(s);
-        r
+#[async_trait]
+impl KeybaseClient for Client {
+
+    fn get_receiver(&mut self) -> Receiver<ListenerEvent>{
+        self.receiver.take().unwrap()
     }
 
-    // ## Keybase Commands
-    //
-    // This is not an exhaustive list of Keybase commands -- I just implemented the bare minimum
-    // needed for my own chat usage. I found the best documentation on the commands is by running
-    // `keybase chat api -h`, they don't seem to have a public API documentation or I couldn't find
-    // it. It is open source, so you can also poke around their Go code if you wish.
-
-    pub async fn fetch_conversations(&self) -> Result<Vec<KeybaseConversation>, Box<dyn Error>> {
+    async fn fetch_conversations(&self) -> Result<Vec<KeybaseConversation>, Box<dyn Error>> {
         let value = run_api_command(
             json!({
                 "method": "list"
@@ -62,7 +65,7 @@ impl Client {
         Ok(vec![])
     }
 
-    pub async fn fetch_messages(&self, conversation: &KeybaseConversation, count: u32) -> Result<Vec<Message>, Box<dyn Error>>{
+    async fn fetch_messages(&self, conversation: &KeybaseConversation, count: u32) -> Result<Vec<Message>, Box<dyn Error>>{
         let value = run_api_command(
             json!({
                 "method": "read",
@@ -82,7 +85,7 @@ impl Client {
         Ok(vec![])
     }
 
-    pub async fn send_message<T: Into<String>>(&self, channel: &Channel, message: T) -> Result<(), Box<dyn Error>> {
+    async fn send_message<T: Into<String> + Send>(&self, channel: &Channel, message: T) -> Result<(), Box<dyn Error>> {
         run_api_command(
             json!({
                 "method": "send",
@@ -97,7 +100,21 @@ impl Client {
         Ok(())
     }
 
-    pub async fn start_listener(&self) -> Result<Child, Box<dyn Error>> {
+}
+
+impl Client {
+    pub fn new() -> Self {
+        let (s, r) = mpsc::channel(32);
+        let mut c = Client {
+            receiver: Some(r), 
+            subscriber: Some(s),
+            listener: None
+        };
+        c.listener = Some(c.start_listener().unwrap());
+        c
+    }
+
+    pub fn start_listener(&self) -> Result<Child, Box<dyn Error>> {
         let mut child = Command::new("keybase")
             .arg("chat")
             .arg("api-listen")
@@ -118,6 +135,7 @@ impl Client {
                 subscriber.send(event).await.unwrap();
             }
         });
+
         Ok(child)
     }
 }

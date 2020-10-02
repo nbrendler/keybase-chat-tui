@@ -1,40 +1,25 @@
 use tokio::sync::mpsc::{Receiver};
 
-use crate::client::Client;
+use crate::client::{KeybaseClient};
 use crate::state::ApplicationState;
 use crate::types::{ListenerEvent, UiMessage};
 
-pub struct Controller<S> {
-    client: Client,
+pub struct Controller<S, C> {
+    client: C,
     state: S,
-    client_receiver: Receiver<ListenerEvent>,
     ui_receiver: Receiver<UiMessage>,
-    listener: Option<tokio::process::Child>
 }
 
-impl<S> Drop for Controller<S> {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.listener.take() {
-            child.kill().unwrap();
-        }
-    }
-}
-
-impl<S: ApplicationState> Controller<S> {
-    pub fn new(mut client: Client, state: S, receiver: Receiver<UiMessage>) -> Self {
-        let r = client.register();
+impl<S: ApplicationState, C: KeybaseClient> Controller<S, C> {
+    pub fn new(client: C, state: S, receiver: Receiver<UiMessage>) -> Self {
         Controller {
             client,
             state,
-            listener: None, 
-            client_receiver: r,
             ui_receiver: receiver
-                
         }
     }
 
     pub async fn init(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.listener = Some(self.client.start_listener().await?);
         let conversations = self.client.fetch_conversations().await?;
         if !conversations.is_empty() {
             let first_id = conversations[0].id.clone();
@@ -45,9 +30,10 @@ impl<S: ApplicationState> Controller<S> {
     }
 
     pub async fn process_events(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut client_receiver = self.client.get_receiver();
         loop {
             tokio::select! {
-                msg = self.client_receiver.recv() => {
+                msg = client_receiver.recv() => {
                     if let Some(value) = msg {
                         match value {
                             ListenerEvent::ChatMessage(msg) => {
@@ -77,7 +63,7 @@ impl<S: ApplicationState> Controller<S> {
     }
 }
 
-async fn switch_conversation<S: ApplicationState>(client: &mut Client, state: &mut S, conversation_id: String) -> Result<(), Box<dyn std::error::Error>>{
+async fn switch_conversation<S: ApplicationState, C: KeybaseClient>(client: &mut C, state: &mut S, conversation_id: String) -> Result<(), Box<dyn std::error::Error>>{
     let (convo_id, should_fetch) = {
         if let Some(mut convo) = state.get_conversation_mut(&conversation_id){
             if !convo.fetched {
