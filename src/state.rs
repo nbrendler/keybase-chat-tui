@@ -24,6 +24,8 @@
 use std::collections::hash_map::Values;
 use std::collections::HashMap;
 
+use mockall::*;
+
 use crate::types::{Conversation, Message};
 
 type ConversationId = String;
@@ -31,6 +33,7 @@ type ConversationId = String;
 // Trait that interested parties can implement (and register themselves below) to receive
 // notifications when state changes. The APIs are all a little hodge-podge depending on what I
 // needed to render in each case.
+#[automock]
 pub trait StateObserver {
     fn on_conversation_change(&mut self, data: &Conversation);
     fn on_conversations_added(&mut self, data: &[Conversation]);
@@ -162,39 +165,50 @@ impl ApplicationState for ApplicationStateInner {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::types::{Channel, KeybaseConversation, MemberType};
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use crate::types::{
+        Channel, KeybaseConversation, MemberType, MessageBody, MessageType, Sender,
+    };
+    use std::collections::HashSet;
 
-    struct TestObserver {
-        conversation_change_called: bool,
-        conversations_added_called: bool,
-        message_called: bool,
-    }
-
-    impl StateObserver for Rc<RefCell<TestObserver>> {
-        fn on_conversation_change(&mut self, _: &Conversation) {
-            self.borrow_mut().conversation_change_called = true;
-        }
-
-        fn on_conversations_added(&mut self, _: &[Conversation]) {
-            self.borrow_mut().conversations_added_called = true;
-        }
-
-        fn on_message(&mut self, _: &Message, _: &str, _: bool) {
-            self.borrow_mut().message_called = true;
-        }
-    }
-
-    impl Default for TestObserver {
-        fn default() -> Self {
-            TestObserver {
-                conversation_change_called: false,
-                conversations_added_called: false,
-                message_called: false,
+    macro_rules! conversation {
+        ($id:expr) => {{
+            let convo: Conversation = KeybaseConversation {
+                id: $id.to_string(),
+                unread: false,
+                channel: Channel {
+                    name: "channel".to_string(),
+                    topic_name: "".to_string(),
+                    members_type: MemberType::User,
+                },
             }
-        }
+            .into();
+            convo
+        }};
     }
+
+    macro_rules! message {
+        ($convo_id: expr, $text: expr) => {
+            Message {
+                conversation_id: $convo_id.to_string(),
+                content: MessageType::Text {
+                    text: MessageBody {
+                        body: $text.to_string(),
+                    },
+                },
+                channel: Channel {
+                    name: "My Channel".to_string(),
+                    topic_name: "".to_string(),
+                    members_type: MemberType::User,
+                },
+                sender: Sender {
+                    device_name: "My Device".to_string(),
+                    username: "Some Guy".to_string(),
+                },
+            }
+        };
+    }
+
+    // State Tests
 
     #[test]
     fn initial_state() {
@@ -206,27 +220,198 @@ mod test {
     }
 
     #[test]
-    fn set_current_convo() {
+    fn get_or_set_conversation() {
         let mut state = ApplicationStateInner::default();
 
-        let obs = Rc::new(RefCell::new(TestObserver::default()));
-        state.register_observer(Box::new(obs.clone()));
+        let test_convo = conversation!("test");
+        let data = test_convo.data.clone();
 
-        state.insert_conversation(
-            KeybaseConversation {
-                id: "test".to_string(),
-                unread: false,
-                channel: Channel {
-                    name: "My Channel".to_string(),
-                    topic_name: "".to_string(),
-                    members_type: MemberType::User,
-                },
-            }
-            .into(),
-        );
+        state.insert_conversation(test_convo);
+        let actual = state.get_conversation("test").unwrap();
+        assert_eq!(actual.id, "test");
+        assert_eq!(actual.data, data);
+
+        let mut_actual = state.get_conversation_mut("test").unwrap();
+        assert_eq!(mut_actual.id, "test");
+        assert_eq!(mut_actual.data, data);
+    }
+
+    #[test]
+    fn current_conversation() {
+        let mut state = ApplicationStateInner::default();
+
+        state.set_current_conversation("test");
+        assert!(state.get_current_conversation().is_none());
+
+        let convo = conversation!("test");
+        let data_copy = convo.data.clone();
+
+        state.insert_conversation(convo);
+        state.set_current_conversation("test");
+        let current = state.get_current_conversation().unwrap();
+
+        assert_eq!(current.id, "test");
+        assert_eq!(current.data, data_copy);
+    }
+
+    #[test]
+    fn get_or_set_whole_vec() {
+        let mut state = ApplicationStateInner::default();
+        let conversations = vec![conversation!("test1"), conversation!("test2")];
+        let set: HashSet<Conversation> = conversations.iter().cloned().collect();
+
+        state.set_conversations(conversations);
+
+        for c in state.get_conversations() {
+            assert!(set.contains(c));
+        }
+    }
+
+    #[test]
+    fn insert_message() {
+        let mut state = ApplicationStateInner::default();
+
+        state.insert_conversation(conversation!("test"));
+        state.insert_message("test", message!("test", "hey"));
+
+        let convo = state.get_conversation("test").unwrap();
+
+        if let MessageType::Text { text } = &convo.messages[0].content {
+            assert_eq!(text.body, "hey");
+        } else {
+            panic!("Wrong message type");
+        }
+
+        state.insert_message("test", message!("test", "there"));
+        let convo = state.get_conversation("test").unwrap();
+
+        // message should be prepended
+        if let MessageType::Text { text } = &convo.messages[0].content {
+            assert_eq!(text.body, "there");
+        } else {
+            panic!("Wrong message type");
+        }
+    }
+
+    // Observer Tests
+
+    #[test]
+    fn obs_set_current_convo() {
+        let mut state = ApplicationStateInner::default();
+
+        let test_convo = conversation!("test");
+
+        let mut obs = MockStateObserver::new();
+
+        obs.expect_on_conversation_change()
+            .withf(|convo: &Conversation| &*convo.id == "test")
+            .times(1)
+            .return_const(());
+
+        state.register_observer(Box::new(obs));
+
+        state.insert_conversation(test_convo);
         state.set_current_conversation("test");
 
         assert_eq!(state.get_current_conversation().unwrap().id, "test");
-        assert!(obs.borrow().conversation_change_called);
+    }
+
+    #[test]
+    fn obs_set_conversations() {
+        let mut state = ApplicationStateInner::default();
+        let conversations: Vec<Conversation> = vec![conversation!("test1"), conversation!("test2")];
+
+        let c = conversations.clone();
+
+        let mut obs = MockStateObserver::new();
+
+        obs.expect_on_conversations_added()
+            .withf(move |convos: &[Conversation]| {
+                convos.iter().zip(c.iter()).all(|(c1, c2)| c1 == c2)
+            })
+            .times(1)
+            .return_const(());
+
+        state.register_observer(Box::new(obs));
+        state.set_conversations(conversations);
+
+        assert!(state.get_current_conversation().is_none())
+    }
+
+    #[test]
+    fn obs_send_message() {
+        let mut state = ApplicationStateInner::default();
+
+        let test_convo1 = conversation!("test1");
+        let test_convo2 = conversation!("test2");
+
+        let message = Message {
+            conversation_id: "test1".to_string(),
+            content: MessageType::Text {
+                text: MessageBody {
+                    body: "My Message".to_string(),
+                },
+            },
+            channel: Channel {
+                name: "My Channel".to_string(),
+                topic_name: "".to_string(),
+                members_type: MemberType::User,
+            },
+            sender: Sender {
+                device_name: "My Device".to_string(),
+                username: "Some Guy".to_string(),
+            },
+        };
+
+        let message2 = Message {
+            conversation_id: "test2".to_string(),
+            content: MessageType::Text {
+                text: MessageBody {
+                    body: "My Message 2".to_string(),
+                },
+            },
+            channel: Channel {
+                name: "My Channel".to_string(),
+                topic_name: "".to_string(),
+                members_type: MemberType::User,
+            },
+            sender: Sender {
+                device_name: "My Device".to_string(),
+                username: "Some Guy".to_string(),
+            },
+        };
+
+        let m1 = message.clone();
+
+        let mut inactive_obs = MockStateObserver::new();
+        inactive_obs
+            .expect_on_message()
+            .withf(move |msg: &Message, id: &str, active: &bool| {
+                *msg == m1 && id == "test1" && !*active
+            })
+            .times(1)
+            .return_const(());
+
+        state.insert_conversation(test_convo1);
+        state.insert_conversation(test_convo2);
+        state.set_current_conversation("test2");
+
+        state.register_observer(Box::new(inactive_obs));
+        state.insert_message("test1", message);
+
+        state.observers.clear();
+
+        let mut active_obs = MockStateObserver::new();
+        let m2 = message2.clone();
+        active_obs
+            .expect_on_message()
+            .withf(move |msg: &Message, id: &str, active: &bool| {
+                *msg == m2 && id == "test2" && *active
+            })
+            .times(1)
+            .return_const(());
+
+        state.register_observer(Box::new(active_obs));
+        state.insert_message("test2", message2);
     }
 }

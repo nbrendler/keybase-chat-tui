@@ -5,6 +5,8 @@
 //
 // A lot of these were just trial and error while using the Keybase API and fixing serialization
 // errors.
+use std::hash::{Hash, Hasher};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -33,7 +35,7 @@ pub enum ApiResponse {
     },
 }
 
-#[derive(PartialOrd, Eq, PartialEq, Clone, Debug, Serialize, Deserialize)]
+#[derive(Hash, PartialOrd, Eq, PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum MemberType {
     #[serde(rename = "impteamnative")]
     User,
@@ -41,7 +43,7 @@ pub enum MemberType {
     Team,
 }
 
-#[derive(PartialOrd, Eq, PartialEq, Clone, Debug, Serialize, Deserialize)]
+#[derive(Hash, Eq, PartialOrd, PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub struct Channel {
     pub name: String,
     #[serde(default)]
@@ -49,19 +51,19 @@ pub struct Channel {
     pub members_type: MemberType,
 }
 
-#[derive(PartialOrd, PartialEq, Clone, Debug, Deserialize)]
+#[derive(Hash, Eq, PartialOrd, PartialEq, Clone, Debug, Deserialize)]
 pub struct KeybaseConversation {
     pub id: String,
     pub channel: Channel,
     pub unread: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(PartialEq, Clone, Debug, Deserialize)]
 pub struct MessageBody {
     pub body: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(PartialEq, Clone, Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum MessageType {
     #[serde(rename = "join")]
@@ -85,7 +87,7 @@ pub struct MessageWrapper {
     pub msg: Message,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(PartialEq, Clone, Debug, Deserialize)]
 pub struct Message {
     pub channel: Channel,
     pub content: MessageType,
@@ -93,7 +95,7 @@ pub struct Message {
     pub conversation_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(PartialEq, Clone, Debug, Deserialize)]
 pub struct Sender {
     pub username: String,
     pub device_name: String,
@@ -114,6 +116,21 @@ pub struct Conversation {
     pub messages: Vec<Message>,
 
     pub data: KeybaseConversation,
+}
+
+impl PartialEq for Conversation {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.data == other.data
+    }
+}
+
+impl Eq for Conversation {}
+
+impl Hash for Conversation {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.data.hash(state);
+    }
 }
 
 impl Conversation {
