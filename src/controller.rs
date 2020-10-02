@@ -2,16 +2,16 @@ use tokio::sync::mpsc::{Receiver};
 
 use crate::client::{KeybaseClient};
 use crate::state::ApplicationState;
-use crate::types::{ListenerEvent, UiMessage};
+use crate::types::{ListenerEvent, UiEvent};
 
 pub struct Controller<S, C> {
     client: C,
     state: S,
-    ui_receiver: Receiver<UiMessage>,
+    ui_receiver: Receiver<UiEvent>,
 }
 
 impl<S: ApplicationState, C: KeybaseClient> Controller<S, C> {
-    pub fn new(client: C, state: S, receiver: Receiver<UiMessage>) -> Self {
+    pub fn new(client: C, state: S, receiver: Receiver<UiEvent>) -> Self {
         Controller {
             client,
             state,
@@ -46,13 +46,13 @@ impl<S: ApplicationState, C: KeybaseClient> Controller<S, C> {
                 msg = self.ui_receiver.recv() => {
                     if let Some(value) = msg {
                         match value {
-                            UiMessage::SendMessage(msg) => {
+                            UiEvent::SendMessage(msg) => {
                                 if let Some(convo) = self.state.get_current_conversation() {
                                     let channel = &convo.data.channel;
                                     self.client.send_message(channel, msg).await?;
                                 }
                             },
-                            UiMessage::SwitchConversation(conversation_id) => {
+                            UiEvent::SwitchConversation(conversation_id) => {
                                 switch_conversation(&mut self.client, &mut self.state, conversation_id).await?;
                             }
                         }

@@ -101,7 +101,7 @@ pub struct Sender {
     pub device_name: String,
 }
 
-pub enum UiMessage {
+pub enum UiEvent {
     SendMessage(String),
     SwitchConversation(String),
 }

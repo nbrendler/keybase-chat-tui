@@ -12,7 +12,7 @@ use log::debug;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::state::StateObserver;
-use crate::types::{Conversation, Message, MessageType, UiMessage};
+use crate::types::{Conversation, Message, MessageType, UiEvent};
 use crate::views::conversation::{ConversationName, ConversationView};
 
 pub struct UiBuilder {
@@ -45,7 +45,7 @@ impl UiBuilder {
         UiBuilder { cursive: siv }
     }
 
-    pub fn build(mut self) -> (Rc<RefCell<Ui>>, Receiver<UiMessage>) {
+    pub fn build(mut self) -> (Rc<RefCell<Ui>>, Receiver<UiEvent>) {
         let (ui_send, ui_recv) = mpsc::channel(32);
         let executor = UiExecutor {
             sender: ui_send,
@@ -179,7 +179,7 @@ impl StateObserver for Rc<RefCell<Ui>> {
 
 #[derive(Clone)]
 struct UiExecutor {
-    sender: Sender<UiMessage>,
+    sender: Sender<UiEvent>,
 }
 
 // helper to create the view of available conversations on the left. Should probably go to its own
@@ -213,7 +213,7 @@ fn handle_switch(v: &mut IdView<ConversationView>, e: &Event) -> Option<EventRes
                             let mut exec = executor.clone();
                             let c = convo.clone();
                             tokio::spawn(async move {
-                                exec.sender.send(UiMessage::SwitchConversation(c)).await;
+                                exec.sender.send(UiEvent::SwitchConversation(c)).await;
                             });
                         });
                     }))
@@ -232,7 +232,7 @@ fn send_chat_message(s: &mut Cursive, msg: &str) {
         let mut exec = executor.clone();
         let c = msg.to_owned();
         tokio::spawn(async move {
-            exec.sender.send(UiMessage::SendMessage(c)).await;
+            exec.sender.send(UiEvent::SendMessage(c)).await;
         });
     });
 }
