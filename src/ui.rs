@@ -15,6 +15,8 @@ use crate::state::StateObserver;
 use crate::types::{Conversation, Message, MessageType, UiEvent};
 use crate::views::conversation::{ConversationName, ConversationView};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub struct UiBuilder {
     cursive: Cursive,
 }
@@ -36,7 +38,7 @@ impl UiBuilder {
                     .child(conversation_list())
                     .child(chat_area()),
             )
-            .title("keybase-chat-tui"),
+            .title(format!("keybase-chat-tui ({})", VERSION)),
         );
 
         // focus the edit view (where you type) on the initial render

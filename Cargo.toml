@@ -1,6 +1,6 @@
 [package]
 name = "keybase-chat-tui"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Nikolai Brendler <nbrendler@gmail.com>"]
 edition = "2018"
 
