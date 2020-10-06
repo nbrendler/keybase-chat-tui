@@ -24,6 +24,7 @@
 use std::collections::hash_map::Values;
 use std::collections::HashMap;
 
+#[cfg(test)]
 use mockall::*;
 
 use crate::types::{Conversation, Message};
@@ -33,7 +34,7 @@ type ConversationId = String;
 // Trait that interested parties can implement (and register themselves below) to receive
 // notifications when state changes. The APIs are all a little hodge-podge depending on what I
 // needed to render in each case.
-#[automock]
+#[cfg_attr(test, automock)]
 pub trait StateObserver {
     fn on_conversation_change(&mut self, data: &Conversation);
     fn on_conversations_added(&mut self, data: &[Conversation]);
@@ -165,48 +166,12 @@ impl ApplicationState for ApplicationStateInner {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::types::*;
     use crate::types::{
         Channel, KeybaseConversation, MemberType, MessageBody, MessageType, Sender,
     };
+    use crate::{conversation, message};
     use std::collections::HashSet;
-
-    macro_rules! conversation {
-        ($id:expr) => {{
-            let convo: Conversation = KeybaseConversation {
-                id: $id.to_string(),
-                unread: false,
-                channel: Channel {
-                    name: "channel".to_string(),
-                    topic_name: "".to_string(),
-                    members_type: MemberType::User,
-                },
-            }
-            .into();
-            convo
-        }};
-    }
-
-    macro_rules! message {
-        ($convo_id: expr, $text: expr) => {
-            Message {
-                conversation_id: $convo_id.to_string(),
-                content: MessageType::Text {
-                    text: MessageBody {
-                        body: $text.to_string(),
-                    },
-                },
-                channel: Channel {
-                    name: "My Channel".to_string(),
-                    topic_name: "".to_string(),
-                    members_type: MemberType::User,
-                },
-                sender: Sender {
-                    device_name: "My Device".to_string(),
-                    username: "Some Guy".to_string(),
-                },
-            }
-        };
-    }
 
     // State Tests
 
@@ -223,7 +188,7 @@ mod test {
     fn get_or_set_conversation() {
         let mut state = ApplicationStateInner::default();
 
-        let test_convo = conversation!("test");
+        let test_convo: Conversation = conversation!("test").into();
         let data = test_convo.data.clone();
 
         state.insert_conversation(test_convo);
@@ -243,7 +208,7 @@ mod test {
         state.set_current_conversation("test");
         assert!(state.get_current_conversation().is_none());
 
-        let convo = conversation!("test");
+        let convo: Conversation = conversation!("test").into();
         let data_copy = convo.data.clone();
 
         state.insert_conversation(convo);
@@ -257,7 +222,7 @@ mod test {
     #[test]
     fn get_or_set_whole_vec() {
         let mut state = ApplicationStateInner::default();
-        let conversations = vec![conversation!("test1"), conversation!("test2")];
+        let conversations = vec![conversation!("test1").into(), conversation!("test2").into()];
         let set: HashSet<Conversation> = conversations.iter().cloned().collect();
 
         state.set_conversations(conversations);
@@ -271,7 +236,7 @@ mod test {
     fn insert_message() {
         let mut state = ApplicationStateInner::default();
 
-        state.insert_conversation(conversation!("test"));
+        state.insert_conversation(conversation!("test").into());
         state.insert_message("test", message!("test", "hey"));
 
         let convo = state.get_conversation("test").unwrap();
@@ -299,7 +264,7 @@ mod test {
     fn obs_set_current_convo() {
         let mut state = ApplicationStateInner::default();
 
-        let test_convo = conversation!("test");
+        let test_convo: Conversation = conversation!("test").into();
 
         let mut obs = MockStateObserver::new();
 
@@ -319,7 +284,8 @@ mod test {
     #[test]
     fn obs_set_conversations() {
         let mut state = ApplicationStateInner::default();
-        let conversations: Vec<Conversation> = vec![conversation!("test1"), conversation!("test2")];
+        let conversations: Vec<Conversation> =
+            vec![conversation!("test1").into(), conversation!("test2").into()];
 
         let c = conversations.clone();
 
@@ -342,8 +308,8 @@ mod test {
     fn obs_send_message() {
         let mut state = ApplicationStateInner::default();
 
-        let test_convo1 = conversation!("test1");
-        let test_convo2 = conversation!("test2");
+        let test_convo1: Conversation = conversation!("test1").into();
+        let test_convo2: Conversation = conversation!("test2").into();
 
         let message = Message {
             conversation_id: "test1".to_string(),

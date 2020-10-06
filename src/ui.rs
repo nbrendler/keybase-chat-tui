@@ -51,12 +51,11 @@ impl UiBuilder {
             sender: ui_send,
         };
 
-        self.cursive.set_user_data(executor.clone());
+        self.cursive.set_user_data(executor);
 
         (
             Rc::new(RefCell::new(Ui {
                 cursive: self.cursive,
-                executor,
             })),
             ui_recv,
         )
@@ -66,7 +65,6 @@ impl UiBuilder {
 pub struct Ui {
     // Cursive (Rust TUI library object)
     cursive: Cursive,
-    executor: UiExecutor,
 }
 
 impl Ui {
@@ -213,7 +211,7 @@ fn handle_switch(v: &mut IdView<ConversationView>, e: &Event) -> Option<EventRes
                             let mut exec = executor.clone();
                             let c = convo.clone();
                             tokio::spawn(async move {
-                                exec.sender.send(UiEvent::SwitchConversation(c)).await;
+                                exec.sender.send(UiEvent::SwitchConversation(c)).await.ok();
                             });
                         });
                     }))
@@ -232,7 +230,7 @@ fn send_chat_message(s: &mut Cursive, msg: &str) {
         let mut exec = executor.clone();
         let c = msg.to_owned();
         tokio::spawn(async move {
-            exec.sender.send(UiEvent::SendMessage(c)).await;
+            exec.sender.send(UiEvent::SendMessage(c)).await.ok();
         });
     });
 }

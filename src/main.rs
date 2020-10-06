@@ -14,8 +14,10 @@ mod state;
 mod types;
 mod ui;
 mod views;
+#[macro_use]
+mod macros;
 
-use crate::client::Client;
+use crate::client::{ClientExecutor, Client};
 use crate::controller::Controller;
 use crate::state::{ApplicationState, ApplicationStateInner};
 use crate::ui::UiBuilder;
@@ -38,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = ApplicationStateInner::default();
 
     state.register_observer(Box::new(ui.clone()));
-    let client = Client::new();
+    let client = Client::<ClientExecutor>::default();
     let mut controller = Controller::new(client, state, ui_recv);
 
     controller.init().await?;

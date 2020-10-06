@@ -10,7 +10,7 @@ pub struct Controller<S, C> {
     ui_receiver: Receiver<UiEvent>,
 }
 
-impl<S: ApplicationState, C: KeybaseClient> Controller<S, C> {
+impl<S: ApplicationState, C: KeybaseClient> Controller<S, C>{
     pub fn new(client: C, state: S, receiver: Receiver<UiEvent>) -> Self {
         Controller {
             client,
@@ -89,3 +89,65 @@ async fn switch_conversation<S: ApplicationState, C: KeybaseClient>(client: &mut
     Ok(())
 }
 
+#[cfg(test)]
+mod test {
+
+    use super::*;
+    use crate::client::MockKeybaseClient;
+    use crate::state::ApplicationStateInner;
+    use crate::conversation;
+    use crate::types::*;
+
+    #[tokio::test]
+    async fn init() {
+        let (_, r) = tokio::sync::mpsc::channel::<UiEvent>(32);
+        let mut client = MockKeybaseClient::new();
+        client.expect_fetch_conversations()
+            .times(1)
+            .return_once(|| Ok(vec![]));
+
+        let state = ApplicationStateInner::default();
+
+        let mut controller = Controller::new(client, state, r);
+        controller.init().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn switch_conversation() {
+        let (mut s, r) = tokio::sync::mpsc::channel::<UiEvent>(32);
+        let (_, c_recv) = tokio::sync::mpsc::channel::<ListenerEvent>(32);
+        let mut client = MockKeybaseClient::new();
+        let convo = conversation!("test1");
+        let convo2 = conversation!("test2");
+        let c1 = convo.clone();
+        let c2 = convo2.clone();
+
+        client.expect_get_receiver()
+            .times(1)
+            .return_once(move || c_recv);
+
+        client.expect_fetch_conversations()
+            .times(1)
+            .return_once(move || Ok(vec![c1, c2]));
+
+        client.expect_fetch_messages()
+            .withf(move |c: &KeybaseConversation, _| c.id == "test1")
+            .times(1)
+            .return_once(|_, _| Ok(vec![]));
+
+        let state = ApplicationStateInner::default();
+
+        let mut controller = Controller::new(client, state, r);
+
+        controller.init().await.unwrap();
+
+        tokio::spawn(async move {
+            s.send(UiEvent::SwitchConversation("test1".to_string())).await.ok();
+        });
+
+        tokio::select! {
+            _ = controller.process_events() => {},
+            _ = tokio::time::delay_for(tokio::time::Duration::from_millis(10)) => {}
+        }
+    }
+}
