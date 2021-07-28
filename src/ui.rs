@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use cursive::{event::*, view::*, views::*, Cursive};
+use cursive::{event::*, view::*, views::*, Cursive, CursiveExt};
 use dirs::config_dir;
 use log::debug;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -28,8 +28,10 @@ impl UiBuilder {
         // load a theme from `$HOME/.config/keybase-chat-tui/theme.toml` (on linux)
         if let Some(dir) = config_dir() {
             let theme_path = PathBuf::new().join(dir).join("keybase-chat-tui/theme.toml");
-            siv.load_theme_file(theme_path)
-                .expect("Failed to load theme");
+            if theme_path.exists() {
+                siv.load_toml(theme_path.to_str().unwrap())
+                    .expect("Failed to load theme");
+            }
         }
 
         siv.add_layer(
